@@ -1,10 +1,20 @@
-from fastapi import APIRouter, Depends, Query
+"""Customer API routes."""
+
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.dependencies import get_current_user, get_db
-from src.constants.enums import UserRole
+from src.core.services.customer_document_service import CustomerDocumentService
+from src.core.services.customer_service import CustomerService
 from src.schemas.common import PaginatedResponse
-from src.schemas.customer import BlacklistRequest, CustomerCreate, CustomerResponse, CustomerUpdate
+from src.schemas.customer import (
+    BlacklistRequest,
+    CustomerCreate,
+    CustomerResponse,
+    CustomerUpdate,
+    DocumentResponse,
+    DocumentUploadRequest,
+)
 
 router = APIRouter(prefix="/customers", tags=["customers"])
 
@@ -12,23 +22,21 @@ router = APIRouter(prefix="/customers", tags=["customers"])
 @router.get("", response_model=PaginatedResponse[CustomerResponse])
 async def list_customers(
     status: str | None = Query(None, enum=["active", "overdue", "blacklisted"]),
-    search: str | None = Query(None),
+    search: str | None = Query(None, max_length=100),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedResponse[CustomerResponse]:
-    from src.core.services.customer_service import CustomerService
     return await CustomerService(db).list(current_user, status, search, page, page_size)
 
 
-@router.post("", response_model=CustomerResponse, status_code=201)
+@router.post("", response_model=CustomerResponse, status_code=status.HTTP_201_CREATED)
 async def create_customer(
     body: CustomerCreate,
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> CustomerResponse:
-    from src.core.services.customer_service import CustomerService
     return await CustomerService(db).create(current_user, body)
 
 
@@ -38,7 +46,6 @@ async def get_customer(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> CustomerResponse:
-    from src.core.services.customer_service import CustomerService
     return await CustomerService(db).get(current_user, customer_id)
 
 
@@ -49,7 +56,6 @@ async def update_customer(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> CustomerResponse:
-    from src.core.services.customer_service import CustomerService
     return await CustomerService(db).update(current_user, customer_id, body)
 
 
@@ -60,5 +66,27 @@ async def blacklist_customer(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> CustomerResponse:
-    from src.core.services.customer_service import CustomerService
     return await CustomerService(db).blacklist(current_user, customer_id, body.reason)
+
+
+@router.get("/{customer_id}/documents", response_model=list[DocumentResponse])
+async def list_documents(
+    customer_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[DocumentResponse]:
+    return await CustomerDocumentService(db).list(current_user, customer_id)
+
+
+@router.post(
+    "/{customer_id}/documents",
+    response_model=DocumentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_document(
+    customer_id: str,
+    body: DocumentUploadRequest,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> DocumentResponse:
+    return await CustomerDocumentService(db).create(current_user, customer_id, body)
