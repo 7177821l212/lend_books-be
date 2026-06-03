@@ -21,7 +21,7 @@ services:
       POSTGRES_PASSWORD: lendbook
       POSTGRES_DB: lendbook
     ports:
-      - "5432:5432"
+      - "5435:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:

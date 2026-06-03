@@ -6,15 +6,16 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
-    "pydantic>=2.7.0",
+    "pydantic[email]>=2.7.0",
     "pydantic-settings>=2.3.0",
     "sqlalchemy>=2.0.0",
     "asyncpg>=0.29.0",
     "alembic>=1.13.0",
     "python-jose[cryptography]>=3.3.0",
-    "passlib[bcrypt]>=1.7.4",
+    "bcrypt>=4.2.0",
     "python-multipart>=0.0.9",
     "httpx>=0.27.0",
+    "greenlet>=3.5.1",
 ]
 
 [project.optional-dependencies]
@@ -48,5 +49,11 @@ plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 addopts = "--cov=src --cov-report=term-missing --cov-fail-under=70"
 testpaths = ["tests"]
+markers = [
+    "unit: pure logic, no DB/network",
+    "integration: needs DB + HTTP client",
+]
