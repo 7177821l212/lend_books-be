@@ -13,6 +13,7 @@ class User(Base, TimestampMixin):
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    photo_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     role: Mapped[str] = mapped_column(String(20), nullable=False, default=UserRole.COLLECTOR)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 

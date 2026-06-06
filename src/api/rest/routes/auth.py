@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.dependencies import get_current_user, get_db
-from src.schemas.auth import LoginRequest, RefreshRequest, TokenResponse, UserMe
+from src.schemas.auth import ChangePasswordRequest, LoginRequest, RefreshRequest, TokenResponse, UserMe
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -26,3 +26,13 @@ async def me(
 ) -> UserMe:
     from src.core.services.auth_service import AuthService
     return await AuthService(db).get_me(current_user["sub"])
+
+
+@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+async def change_password(
+    body: ChangePasswordRequest,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    from src.core.services.auth_service import AuthService
+    await AuthService(db).change_password(current_user["sub"], body.current_password, body.new_password)

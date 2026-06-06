@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.constants.enums import UserRole
 from src.core.exceptions.base import ConflictError, ForbiddenError
 from src.data.models.postgres.user import User
-from src.schemas.collector import CollectorCreate, CollectorResponse
+from src.schemas.collector import CollectorCreate, CollectorResponse, CollectorUpdate
 from src.utils.security import hash_password
 
 
@@ -45,6 +45,44 @@ class CollectorService:
         self.session.add(user)
         await self.session.flush()
         await self.session.commit()
+        await self.session.refresh(user)
+        return CollectorResponse.model_validate(user)
+
+    async def get(self, current_user: dict, collector_id: str) -> CollectorResponse:
+        self._require_investor(current_user)
+        result = await self.session.execute(
+            select(User).where(
+                User.id == collector_id,
+                User.role == UserRole.COLLECTOR.value,
+            )
+        )
+        user = result.scalar()
+        if not user:
+            from src.core.exceptions.base import NotFoundError
+            raise NotFoundError("collector", collector_id)
+        return CollectorResponse.model_validate(user)
+
+    async def update(
+        self, current_user: dict, collector_id: str, body: CollectorUpdate
+    ) -> CollectorResponse:
+        self._require_investor(current_user)
+        result = await self.session.execute(
+            select(User).where(
+                User.id == collector_id,
+                User.role == UserRole.COLLECTOR.value,
+            )
+        )
+        user = result.scalar()
+        if not user:
+            from src.core.exceptions.base import NotFoundError
+            raise NotFoundError("collector", collector_id)
+        if body.name is not None:
+            user.name = body.name
+        if body.phone is not None:
+            user.phone = body.phone
+        if body.photo_url is not None:
+            user.photo_url = body.photo_url
+        await self.session.flush()
         await self.session.refresh(user)
         return CollectorResponse.model_validate(user)
 
