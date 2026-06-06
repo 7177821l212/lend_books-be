@@ -16,4 +16,4 @@ USER appuser
 
 ENV PORT=8080
 EXPOSE 8080
-CMD exec uvicorn src.main:app --host 0.0.0.0 --port ${PORT}
+CMD ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8080"]
