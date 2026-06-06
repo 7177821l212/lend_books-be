@@ -210,8 +210,8 @@ class TestGenerateSchedule:
             date(2026, 8, 1),
         ]
 
-    def test_custom_missing_dates_raises(self) -> None:
-        with pytest.raises(ValueError, match="frequency_meta.dates"):
+    def test_custom_missing_meta_raises(self) -> None:
+        with pytest.raises(ValueError, match="frequency_meta"):
             generate_schedule(
                 start_date=date(2026, 1, 1),
                 frequency=RepaymentFrequency.CUSTOM,
@@ -219,3 +219,15 @@ class TestGenerateSchedule:
                 total_installments=2,
                 repayable=2000,
             )
+
+    def test_custom_interval_days_generates_correct_dates(self) -> None:
+        _, _, rows = generate_schedule(
+            start_date=date(2026, 1, 1),
+            frequency=RepaymentFrequency.CUSTOM,
+            frequency_meta={"interval_days": 10},
+            total_installments=3,
+            repayable=3000,
+        )
+        assert rows[0].due_date == date(2026, 1, 1)
+        assert rows[1].due_date == date(2026, 1, 11)
+        assert rows[2].due_date == date(2026, 1, 21)

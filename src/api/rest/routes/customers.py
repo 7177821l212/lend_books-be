@@ -69,6 +69,15 @@ async def blacklist_customer(
     return await CustomerService(db).blacklist(current_user, customer_id, body.reason)
 
 
+@router.delete("/{customer_id}/blacklist", response_model=CustomerResponse)
+async def unblacklist_customer(
+    customer_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CustomerResponse:
+    return await CustomerService(db).unblacklist(current_user, customer_id)
+
+
 @router.get("/{customer_id}/documents", response_model=list[DocumentResponse])
 async def list_documents(
     customer_id: str,

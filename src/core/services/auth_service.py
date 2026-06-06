@@ -10,6 +10,7 @@ from src.utils.security import (
     create_access_token,
     create_refresh_token,
     decode_token,
+    hash_password,
     verify_password,
 )
 
@@ -63,3 +64,14 @@ class AuthService:
         if user is None:
             raise UnauthorizedError("user not found")
         return UserMe.model_validate(user)
+
+    async def change_password(
+        self, user_id: str, current_password: str, new_password: str
+    ) -> None:
+        user = await self.users.get_by_id(user_id)
+        if user is None:
+            raise UnauthorizedError("user not found")
+        if not verify_password(current_password, user.hashed_password):
+            raise UnauthorizedError("current password is incorrect")
+        user.hashed_password = hash_password(new_password)
+        await self.users.session.flush()

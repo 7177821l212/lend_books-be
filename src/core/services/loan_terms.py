@@ -157,13 +157,20 @@ def _date_for_index(
     if frequency is RepaymentFrequency.YEARLY:
         return _add_months(start, 12 * idx)
     if frequency is RepaymentFrequency.CUSTOM:
-        if not meta or "dates" not in meta:
-            raise ValueError("CUSTOM frequency requires frequency_meta.dates")
-        dates = meta["dates"]
-        if idx >= len(dates):
-            raise ValueError(
-                f"frequency_meta.dates has {len(dates)} entries; need at least {idx + 1}"
-            )
-        raw = dates[idx]
-        return raw if isinstance(raw, date) else date.fromisoformat(str(raw))
+        if not meta:
+            raise ValueError("CUSTOM frequency requires frequency_meta")
+        if "interval_days" in meta:
+            interval = int(meta["interval_days"])
+            if interval <= 0:
+                raise ValueError("interval_days must be positive")
+            return start + timedelta(days=interval * idx)
+        if "dates" in meta:
+            dates = meta["dates"]
+            if idx >= len(dates):
+                raise ValueError(
+                    f"frequency_meta.dates has {len(dates)} entries; need at least {idx + 1}"
+                )
+            raw = dates[idx]
+            return raw if isinstance(raw, date) else date.fromisoformat(str(raw))
+        raise ValueError("CUSTOM frequency requires frequency_meta.interval_days or frequency_meta.dates")
     raise ValueError(f"unsupported frequency: {frequency}")

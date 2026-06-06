@@ -196,6 +196,18 @@ class CustomerService:
         await self.session.flush()
         return CustomerResponse.model_validate(customer)
 
+    async def unblacklist(
+        self, current_user: dict, customer_id: str
+    ) -> CustomerResponse:
+        self._require_investor(current_user)
+        customer = await self.customers.get_by_id(customer_id)
+        if customer is None:
+            raise NotFoundError("customer", customer_id)
+        customer.is_blacklisted = False
+        customer.blacklist_reason = None
+        await self.session.flush()
+        return CustomerResponse.model_validate(customer)
+
     # ----- RBAC helpers -----
 
     @staticmethod

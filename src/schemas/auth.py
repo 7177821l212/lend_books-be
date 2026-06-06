@@ -1,6 +1,6 @@
 """Auth-related Pydantic schemas."""
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 from src.constants.enums import UserRole
 
@@ -29,3 +29,8 @@ class UserMe(BaseModel):
     is_active: bool = True
 
     model_config = {"from_attributes": True}
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=6, max_length=128)
