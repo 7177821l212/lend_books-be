@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+import calendar
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,7 @@ from src.constants.enums import (
     InstallmentStatus,
     LoanStatus,
     PaymentMode,
+    RepaymentFrequency,
     UserRole,
 )
 from src.core.exceptions.base import (
@@ -68,6 +70,11 @@ class PaymentService:
             else InstallmentStatus.PARTIAL.value
         )
 
+        # Propagate any overpayment to subsequent open installments
+        excess = body.amount - credit
+        if excess > 0:
+            await self._apply_excess_to_next(loan, installment.sequence, excess)
+
         payment = Payment(
             loan_id=loan.id,
             schedule_id=installment.id,
@@ -100,6 +107,9 @@ class PaymentService:
         if installment.status == InstallmentStatus.PAID.value:
             raise ConflictError("installment is already paid")
         installment.status = InstallmentStatus.MISSED.value
+
+        # Extend the loan schedule by adding one installment at the end
+        await self._extend_schedule(loan, installment.due_amount)
 
         payment = Payment(
             loan_id=loan.id,
@@ -292,3 +302,97 @@ class PaymentService:
             loan.closed_at = datetime.now(timezone.utc)
             loan.close_reason = "Fully collected"
             await self.session.flush()
+
+    async def _extend_schedule(self, loan: Loan, due_amount: int) -> None:
+        """Add one extra installment at the end of the loan schedule."""
+        result = await self.session.execute(
+            select(Installment)
+            .where(Installment.loan_id == loan.id)
+            .order_by(Installment.sequence.desc())
+            .limit(1)
+        )
+        last = result.scalar_one_or_none()
+        if last is None:
+            return
+        next_date = _next_installment_date(last.due_date, loan.repayment_frequency, loan.frequency_meta)
+        new_inst = Installment(
+            loan_id=loan.id,
+            sequence=last.sequence + 1,
+            due_date=next_date,
+            due_amount=due_amount,
+            paid_amount=0,
+            status=InstallmentStatus.PENDING.value,
+        )
+        self.session.add(new_inst)
+        loan.total_installments += 1
+        await self.session.flush()
+
+    async def _apply_excess_to_next(
+        self, loan: Loan, current_sequence: int, excess: int
+    ) -> None:
+        """Apply overpayment excess to the next open installments in sequence order."""
+        result = await self.session.execute(
+            select(Installment)
+            .where(
+                Installment.loan_id == loan.id,
+                Installment.sequence > current_sequence,
+                Installment.status.in_(
+                    [
+                        InstallmentStatus.PENDING.value,
+                        InstallmentStatus.PARTIAL.value,
+                        InstallmentStatus.OVERDUE.value,
+                        InstallmentStatus.DUE_TODAY.value,
+                    ]
+                ),
+            )
+            .order_by(Installment.sequence)
+        )
+        next_insts = list(result.scalars())
+        remaining = excess
+        for inst in next_insts:
+            if remaining <= 0:
+                break
+            available = inst.due_amount - inst.paid_amount
+            credit = min(remaining, available)
+            inst.paid_amount += credit
+            inst.status = (
+                InstallmentStatus.PAID.value
+                if inst.paid_amount >= inst.due_amount
+                else InstallmentStatus.PARTIAL.value
+            )
+            remaining -= credit
+        if next_insts:
+            await self.session.flush()
+
+
+def _next_installment_date(
+    last_date: date, frequency: str, meta: dict | None
+) -> date:
+    """Compute the due_date one period after `last_date` for the given frequency."""
+    try:
+        freq = RepaymentFrequency(frequency)
+    except ValueError:
+        return last_date + timedelta(days=1)
+
+    if freq == RepaymentFrequency.DAILY:
+        return last_date + timedelta(days=1)
+    if freq == RepaymentFrequency.WEEKLY:
+        return last_date + timedelta(days=7)
+    if freq == RepaymentFrequency.MONTHLY:
+        return _add_months(last_date, 1)
+    if freq == RepaymentFrequency.HALF_YEARLY:
+        return _add_months(last_date, 6)
+    if freq == RepaymentFrequency.YEARLY:
+        return _add_months(last_date, 12)
+    if freq == RepaymentFrequency.CUSTOM:
+        if meta and "interval_days" in meta:
+            return last_date + timedelta(days=int(meta["interval_days"]))
+    return last_date + timedelta(days=1)
+
+
+def _add_months(d: date, months: int) -> date:
+    month = d.month - 1 + months
+    year = d.year + month // 12
+    month = month % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
