@@ -62,7 +62,8 @@ class LoanSummary(BaseModel):
 
     repayment_frequency: RepaymentFrequency
     total_installments: int
-    installment_amount: int
+    installment_amount: int  # base (floor) per-installment amount
+    installment_amount_max: int = 0  # largest single installment when remainder distributes
     start_date: date
 
     status: LoanStatus

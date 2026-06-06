@@ -208,6 +208,34 @@ class TestCustomerCreate:
         )
         assert res.status_code == 409
 
+    async def test_duplicate_phone_whitespace_variant_rejected(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Whitespace / dash variants of an existing phone must still collide."""
+        investor = await _make_user(db_session, "inv-c3@x.com")
+        await _make_customer(db_session, "Existing", "9000000071")
+        headers = await _login_as(client, investor)
+        res = await client.post(
+            "/api/v1/customers",
+            headers=headers,
+            json={"name": "Dup formatted", "phone": "900-000-0071"},
+        )
+        assert res.status_code == 409
+
+    async def test_update_phone_to_existing_returns_409(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        investor = await _make_user(db_session, "inv-c4@x.com")
+        await _make_customer(db_session, "First", "9000000072")
+        second = await _make_customer(db_session, "Second", "9000000073")
+        headers = await _login_as(client, investor)
+        res = await client.patch(
+            f"/api/v1/customers/{second.id}",
+            headers=headers,
+            json={"phone": "9000000072"},
+        )
+        assert res.status_code == 409
+
 
 @pytest.mark.integration
 class TestCustomerBlacklist:

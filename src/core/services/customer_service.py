@@ -1,6 +1,9 @@
 """Customer service — RBAC + computed loan summary."""
 
+import re
+
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.constants.enums import LoanStatus, UserRole
@@ -10,6 +13,17 @@ from src.data.models.postgres.loan import Loan
 from src.data.repositories.customer_repository import CustomerRepository
 from src.schemas.common import PaginatedResponse
 from src.schemas.customer import CustomerCreate, CustomerResponse, CustomerUpdate
+
+_NON_DIGIT = re.compile(r"\D+")
+
+
+def _normalize_phone(raw: str) -> str:
+    """Strip every non-digit so '+91 9876-543-210' → '919876543210'.
+
+    Keeps the unique constraint meaningful by preventing whitespace / dash
+    formatting variants from creating duplicate rows.
+    """
+    return _NON_DIGIT.sub("", raw or "")
 
 
 class CustomerService:
@@ -117,17 +131,27 @@ class CustomerService:
 
     async def create(self, current_user: dict, body: CustomerCreate) -> CustomerResponse:
         self._require_investor(current_user)
-        existing = await self.customers.get_by_phone(body.phone)
+        phone = _normalize_phone(body.phone)
+        if not phone:
+            raise ConflictError("phone is required")
+
+        existing = await self.customers.get_by_phone(phone)
         if existing is not None:
-            raise ConflictError(f"customer with phone {body.phone} already exists")
+            raise ConflictError(f"customer with phone {phone} already exists")
+
         customer = Customer(
             name=body.name.strip(),
-            phone=body.phone.strip(),
+            phone=phone,
             location=body.location.strip() if body.location else None,
             risk_level=body.risk_level.value,
             is_blacklisted=False,
         )
-        await self.customers.create(customer)
+        try:
+            await self.customers.create(customer)
+        except IntegrityError as exc:
+            # Race with concurrent create — the unique index catches it
+            await self.session.rollback()
+            raise ConflictError(f"customer with phone {phone} already exists") from exc
         return CustomerResponse.model_validate(customer)
 
     async def update(
@@ -141,12 +165,23 @@ class CustomerService:
         if body.name is not None:
             customer.name = body.name.strip()
         if body.phone is not None:
-            customer.phone = body.phone.strip()
+            new_phone = _normalize_phone(body.phone)
+            if new_phone != customer.phone:
+                clash = await self.customers.get_by_phone(new_phone)
+                if clash is not None and clash.id != customer.id:
+                    raise ConflictError(
+                        f"customer with phone {new_phone} already exists"
+                    )
+                customer.phone = new_phone
         if body.location is not None:
             customer.location = body.location.strip()
         if body.risk_level is not None:
             customer.risk_level = body.risk_level.value
-        await self.session.flush()
+        try:
+            await self.session.flush()
+        except IntegrityError as exc:
+            await self.session.rollback()
+            raise ConflictError("phone update collided with another customer") from exc
         return CustomerResponse.model_validate(customer)
 
     async def blacklist(

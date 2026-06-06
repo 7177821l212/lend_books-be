@@ -108,15 +108,24 @@ def generate_schedule(
     frequency_meta: dict[str, Any] | None,
     total_installments: int,
     repayable: int,
-) -> tuple[int, list[ScheduleRow]]:
-    """Generate (installment_amount, rows).
+) -> tuple[int, int, list[ScheduleRow]]:
+    """Generate (installment_base, installment_max, rows).
 
-    `installment_amount` is the base amount (≥1 row may be 1 rupee higher to absorb remainder).
+    The schedule splits `repayable` into `total_installments` integer rows so the
+    sum equals `repayable` exactly. Any remainder is added to the first rows
+    (each gets +1 rupee), so rows are EITHER `base` OR `base + 1`.
+
+    Returns
+    -------
+    installment_base : the floor amount most rows carry
+    installment_max  : the largest single-row amount (= base + 1 if remainder > 0)
+    rows             : the schedule rows themselves
     """
     if total_installments <= 0:
         raise ValueError("total_installments must be positive")
 
     base, amounts = split_installment(repayable, total_installments)
+    max_amount = max(amounts)
 
     rows: list[ScheduleRow] = []
     for i in range(total_installments):
@@ -127,7 +136,7 @@ def generate_schedule(
                 due_amount=amounts[i],
             )
         )
-    return base, rows
+    return base, max_amount, rows
 
 
 def _date_for_index(

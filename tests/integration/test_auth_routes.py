@@ -151,3 +151,27 @@ class TestRefreshRoute:
     async def test_refresh_with_garbage_returns_401(self, client: AsyncClient) -> None:
         res = await client.post("/api/v1/auth/refresh", json={"refresh_token": "junk"})
         assert res.status_code == 401
+
+    async def test_refresh_token_cannot_be_replayed_after_use(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """A refresh token's jti is revoked the moment it is used to issue a new pair.
+        Replaying the same refresh token must be rejected."""
+        await _make_user(db_session, email="replay@example.com", password="pw12345")
+        login = await client.post(
+            "/api/v1/auth/login", json={"email": "replay@example.com", "password": "pw12345"}
+        )
+        original_refresh = login.json()["refresh_token"]
+
+        # First refresh succeeds
+        ok = await client.post(
+            "/api/v1/auth/refresh", json={"refresh_token": original_refresh}
+        )
+        assert ok.status_code == 200
+
+        # Replay of the SAME refresh token must now be rejected
+        replay = await client.post(
+            "/api/v1/auth/refresh", json={"refresh_token": original_refresh}
+        )
+        assert replay.status_code == 401
+        assert "revoked" in replay.json()["detail"].lower()

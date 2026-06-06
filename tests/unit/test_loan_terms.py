@@ -119,9 +119,36 @@ class TestSplitInstallment:
 
 
 @pytest.mark.unit
+class TestGenerateScheduleContract:
+    def test_even_split_base_equals_max(self) -> None:
+        base, mx, rows = generate_schedule(
+            start_date=date(2026, 1, 1),
+            frequency=RepaymentFrequency.DAILY,
+            frequency_meta=None,
+            total_installments=10,
+            repayable=10000,
+        )
+        assert base == 1000 and mx == 1000
+        assert all(r.due_amount == 1000 for r in rows)
+
+    def test_uneven_split_max_one_above_base(self) -> None:
+        base, mx, rows = generate_schedule(
+            start_date=date(2026, 1, 1),
+            frequency=RepaymentFrequency.DAILY,
+            frequency_meta=None,
+            total_installments=10,
+            repayable=10003,
+        )
+        assert base == 1000
+        assert mx == 1001
+        assert [r.due_amount for r in rows[:3]] == [1001, 1001, 1001]
+        assert [r.due_amount for r in rows[3:]] == [1000] * 7
+
+
+@pytest.mark.unit
 class TestGenerateSchedule:
     def test_daily_schedule(self) -> None:
-        _, rows = generate_schedule(
+        _, _, rows = generate_schedule(
             start_date=date(2026, 1, 1),
             frequency=RepaymentFrequency.DAILY,
             frequency_meta=None,
@@ -135,7 +162,7 @@ class TestGenerateSchedule:
         assert sum(r.due_amount for r in rows) == 5000
 
     def test_weekly_schedule(self) -> None:
-        _, rows = generate_schedule(
+        _, _, rows = generate_schedule(
             start_date=date(2026, 1, 1),
             frequency=RepaymentFrequency.WEEKLY,
             frequency_meta=None,
@@ -148,7 +175,7 @@ class TestGenerateSchedule:
 
     def test_monthly_schedule_handles_short_months(self) -> None:
         # Starting 31 Jan; February has 28 days
-        _, rows = generate_schedule(
+        _, _, rows = generate_schedule(
             start_date=date(2026, 1, 31),
             frequency=RepaymentFrequency.MONTHLY,
             frequency_meta=None,
@@ -160,7 +187,7 @@ class TestGenerateSchedule:
         assert rows[2].due_date == date(2026, 3, 31)
 
     def test_yearly_schedule(self) -> None:
-        _, rows = generate_schedule(
+        _, _, rows = generate_schedule(
             start_date=date(2026, 6, 15),
             frequency=RepaymentFrequency.YEARLY,
             frequency_meta=None,
@@ -170,7 +197,7 @@ class TestGenerateSchedule:
         assert rows[2].due_date == date(2028, 6, 15)
 
     def test_custom_schedule(self) -> None:
-        _, rows = generate_schedule(
+        _, _, rows = generate_schedule(
             start_date=date(2026, 1, 1),
             frequency=RepaymentFrequency.CUSTOM,
             frequency_meta={"dates": ["2026-01-15", "2026-03-20", "2026-08-01"]},

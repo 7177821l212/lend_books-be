@@ -10,7 +10,7 @@ class Customer(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=generate_uuid)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    phone: Mapped[str] = mapped_column(String(20), nullable=False)
+    phone: Mapped[str] = mapped_column(String(20), nullable=False, unique=True, index=True)
     location: Mapped[str | None] = mapped_column(String(255), nullable=True)
     risk_level: Mapped[str] = mapped_column(String(20), default=RiskLevel.MEDIUM, nullable=False)
     is_blacklisted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

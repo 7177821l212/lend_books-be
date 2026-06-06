@@ -66,7 +66,7 @@ class LoanService:
                 interest_value=body.interest_value,
                 lending_model=LendingModel(body.lending_model),
             )
-            installment_amount, schedule_rows = generate_schedule(
+            installment_base, _installment_max, schedule_rows = generate_schedule(
                 start_date=body.start_date,
                 frequency=RepaymentFrequency(body.repayment_frequency),
                 frequency_meta=body.frequency_meta,
@@ -89,7 +89,7 @@ class LoanService:
             repayment_frequency=body.repayment_frequency,
             frequency_meta=body.frequency_meta,
             total_installments=body.total_installments,
-            installment_amount=installment_amount,
+            installment_amount=installment_base,
             start_date=body.start_date,
             status=LoanStatus.ACTIVE.value,
         )
@@ -226,6 +226,15 @@ class LoanService:
     async def _to_summary(self, loan: Loan) -> LoanSummary:
         outstanding, repaid, paid_count, overdue_count = await self._aggregates(loan.id)
         repaid_pct = round((repaid / loan.repayable) * 100, 1) if loan.repayable else 0
+
+        # installment_amount is the BASE (floor) amount;
+        # installment_amount_max is the largest single-installment value
+        # (= base + 1 if `repayable % total_installments != 0`, else base).
+        remainder = loan.repayable - loan.installment_amount * loan.total_installments
+        installment_amount_max = (
+            loan.installment_amount + 1 if remainder > 0 else loan.installment_amount
+        )
+
         return LoanSummary(
             id=loan.id,
             customer_id=loan.customer_id,
@@ -242,6 +251,7 @@ class LoanService:
             repayment_frequency=loan.repayment_frequency,
             total_installments=loan.total_installments,
             installment_amount=loan.installment_amount,
+            installment_amount_max=installment_amount_max,
             start_date=loan.start_date,
             status=loan.status,
             outstanding=outstanding,

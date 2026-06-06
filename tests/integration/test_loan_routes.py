@@ -287,6 +287,75 @@ class TestAssignCollector:
 
 
 @pytest.mark.integration
+class TestCollectorPicker:
+    async def test_inactive_collectors_not_listed(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        investor = await _make_user(db_session, "inv-cp@x.com")
+        active = await _make_user(
+            db_session, "col-cp1@x.com", role=UserRole.COLLECTOR
+        )
+        inactive = await _make_user(
+            db_session, "col-cp2@x.com", role=UserRole.COLLECTOR
+        )
+        inactive.is_active = False
+        await db_session.flush()
+
+        headers = await _login(client, investor)
+        res = await client.get("/api/v1/collectors", headers=headers)
+        assert res.status_code == 200
+        ids = {c["id"] for c in res.json()}
+        assert active.id in ids
+        assert inactive.id not in ids
+
+
+@pytest.mark.integration
+class TestInstallmentAmountContract:
+    async def test_uneven_repayable_exposes_distinct_base_and_max(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Repayable that doesn't divide evenly must surface both base and max."""
+        investor = await _make_user(db_session, "inv-ia@x.com")
+        collector = await _make_user(db_session, "col-ia@x.com", role=UserRole.COLLECTOR)
+        customer = await _make_customer(db_session, phone="9999900200")
+        headers = await _login(client, investor)
+        # principal 10000 + 10% Model B → repayable 11000. 11000 / 7 = 1571 r=3
+        res = await client.post(
+            "/api/v1/loans",
+            headers=headers,
+            json=_payload(
+                customer.id,
+                collector.id,
+                principal=10000,
+                interest_value=10,
+                lending_model="model_b",
+                total_installments=7,
+            ),
+        )
+        assert res.status_code == 201
+        body = res.json()
+        assert body["installment_amount"] == 1571
+        assert body["installment_amount_max"] == 1572
+        assert sum(i["due_amount"] for i in body["installments"]) == 11000
+
+    async def test_even_repayable_base_equals_max(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        investor = await _make_user(db_session, "inv-ie@x.com")
+        collector = await _make_user(db_session, "col-ie@x.com", role=UserRole.COLLECTOR)
+        customer = await _make_customer(db_session, phone="9999900201")
+        headers = await _login(client, investor)
+        res = await client.post(
+            "/api/v1/loans",
+            headers=headers,
+            json=_payload(customer.id, collector.id, principal=10000, interest_value=10),
+        )
+        body = res.json()
+        assert body["installment_amount"] == 1000
+        assert body["installment_amount_max"] == 1000
+
+
+@pytest.mark.integration
 class TestCustomerOutstanding:
     async def test_customer_list_includes_outstanding(
         self, client: AsyncClient, db_session: AsyncSession
