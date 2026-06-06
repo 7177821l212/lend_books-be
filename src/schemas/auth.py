@@ -1,3 +1,5 @@
+"""Auth-related Pydantic schemas."""
+
 from pydantic import BaseModel, EmailStr
 
 from src.constants.enums import UserRole
@@ -22,8 +24,8 @@ class UserMe(BaseModel):
     id: str
     email: str
     name: str
-    phone: str | None
+    phone: str | None = None
     role: UserRole
-    investor_id: str | None
+    is_active: bool = True
 
     model_config = {"from_attributes": True}
