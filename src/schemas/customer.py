@@ -19,6 +19,7 @@ class CustomerUpdate(BaseModel):
     phone: str | None = Field(default=None, min_length=10, max_length=20)
     location: str | None = Field(default=None, max_length=255)
     risk_level: RiskLevel | None = None
+    photo_url: str | None = Field(default=None, max_length=1024)
 
 
 class CustomerResponse(BaseModel):
@@ -31,6 +32,7 @@ class CustomerResponse(BaseModel):
     blacklist_reason: str | None = None
     active_loan_count: int = 0
     total_outstanding: int = 0
+    photo_url: str | None = None
 
     model_config = {"from_attributes": True}
 

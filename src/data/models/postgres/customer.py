@@ -15,6 +15,7 @@ class Customer(Base, TimestampMixin):
     risk_level: Mapped[str] = mapped_column(String(20), default=RiskLevel.MEDIUM, nullable=False)
     is_blacklisted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     blacklist_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    photo_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
     loans = relationship("Loan", back_populates="customer")
     documents = relationship(
