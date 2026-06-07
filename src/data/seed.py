@@ -23,48 +23,6 @@ USERS_TO_SEED: list[dict[str, str]] = [
         "password": "owner123",
         "role": UserRole.INVESTOR.value,
     },
-    {
-        "name": "Ravi Kumar",
-        "email": "ravi@lendbook.app",
-        "phone": "9876500001",
-        "password": "ravi123",
-        "role": UserRole.COLLECTOR.value,
-    },
-    {
-        "name": "Suresh M",
-        "email": "suresh@lendbook.app",
-        "phone": "9876500002",
-        "password": "suresh123",
-        "role": UserRole.COLLECTOR.value,
-    },
-    {
-        "name": "Anita Sharma",
-        "email": "anita@lendbook.app",
-        "phone": "9876500003",
-        "password": "anita123",
-        "role": UserRole.COLLECTOR.value,
-    },
-    {
-        "name": "Karthik V",
-        "email": "karthik@lendbook.app",
-        "phone": "9876500004",
-        "password": "karthik123",
-        "role": UserRole.COLLECTOR.value,
-    },
-    {
-        "name": "Lakshmi R",
-        "email": "lakshmi@lendbook.app",
-        "phone": "9876500005",
-        "password": "lakshmi123",
-        "role": UserRole.COLLECTOR.value,
-    },
-    {
-        "name": "Mani T",
-        "email": "mani@lendbook.app",
-        "phone": "9876500006",
-        "password": "mani123",
-        "role": UserRole.COLLECTOR.value,
-    },
 ]
 
 
