@@ -1,12 +1,11 @@
-"""Photo upload endpoint — stores files in GCS, returns a public URL."""
-import uuid
+"""Photo upload + signed-URL endpoints."""
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from google.cloud import storage
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from src.api.rest.dependencies import get_current_user
 from src.config.settings import settings
+from src.utils import gcs
 
 router = APIRouter(tags=["uploads"])
 
@@ -14,10 +13,9 @@ ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 MAX_SIZE = 5 * 1024 * 1024  # 5 MB
 
 
-def _gcs_client() -> storage.Client:
-    if settings.GOOGLE_APPLICATION_CREDENTIALS:
-        return storage.Client.from_service_account_json(settings.GOOGLE_APPLICATION_CREDENTIALS)
-    return storage.Client()  # falls back to ADC (Application Default Credentials)
+def _require_bucket() -> None:
+    if not settings.GCS_BUCKET_NAME:
+        raise HTTPException(status_code=503, detail="Photo storage is not configured")
 
 
 @router.post("/upload/photo")
@@ -25,8 +23,8 @@ async def upload_photo(
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user),
 ) -> dict:
-    if not settings.GCS_BUCKET_NAME:
-        raise HTTPException(status_code=503, detail="Photo storage is not configured")
+    """Upload a photo to GCS. Returns object_name (store in DB) and a 1-hour signed_url."""
+    _require_bucket()
 
     content_type = file.content_type or ""
     if content_type not in ALLOWED_TYPES:
@@ -36,13 +34,24 @@ async def upload_photo(
     if len(content) > MAX_SIZE:
         raise HTTPException(status_code=400, detail="Image must be under 5 MB")
 
-    suffix = Path(file.filename or "photo.jpg").suffix or ".jpg"
-    object_name = f"photos/{uuid.uuid4().hex}{suffix}"
+    object_name = gcs.upload_photo(content, content_type)
+    signed_url = gcs.generate_signed_url(object_name, expiry_hours=1)
 
-    client = _gcs_client()
-    bucket = client.bucket(settings.GCS_BUCKET_NAME)
-    blob = bucket.blob(object_name)
-    blob.upload_from_string(content, content_type=content_type)
-    blob.make_public()
+    return {"object_name": object_name, "signed_url": signed_url}
 
-    return {"url": blob.public_url}
+
+@router.get("/upload/signed-url")
+async def get_signed_url(
+    object_name: str = Query(..., alias="object_name", description="GCS object name, e.g. photos/abc.jpg"),
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Generate a fresh 1-hour signed URL for any private GCS object."""
+    _require_bucket()
+
+    # Only allow paths under known prefixes
+    allowed_prefixes = ("photos/", "documents/")
+    if not any(object_name.startswith(p) for p in allowed_prefixes):
+        raise HTTPException(status_code=400, detail="Invalid object path")
+
+    signed_url = gcs.generate_signed_url(object_name, expiry_hours=1)
+    return {"signed_url": signed_url}
