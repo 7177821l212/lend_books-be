@@ -33,18 +33,21 @@
         <div>
           <label class="block text-xs text-gray-500 mb-1.5 uppercase tracking-wide">Email</label>
           <input id="email" type="email" value="owner@lendbook.app" autocomplete="email"
-            class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 transition-colors">
+            class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors">
         </div>
         <div>
           <label class="block text-xs text-gray-500 mb-1.5 uppercase tracking-wide">Password</label>
           <input id="password" type="password" autocomplete="current-password"
-            class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 transition-colors">
+            class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors">
         </div>
         <div id="loginError" class="hidden text-red-400 text-xs bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2"></div>
         <button id="loginBtn" onclick="login()"
-          class="w-full bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white rounded-lg py-2.5 text-sm font-medium transition-colors mt-1 flex items-center justify-center gap-2">
+          class="w-full bg-blue-600 hover:bg-blue-500 text-white rounded-lg py-2.5 text-sm font-medium transition-colors flex items-center justify-center gap-2">
           <span>Sign in</span>
         </button>
+        <p class="text-center text-xs text-gray-600 pt-1">
+          Connects to production API
+        </p>
       </div>
     </div>
   </div>
@@ -56,7 +59,7 @@
     <div class="border-b border-gray-800/60 bg-gray-950/80 backdrop-blur sticky top-0 z-10">
       <div class="max-w-7xl mx-auto px-6 py-3.5 flex items-center justify-between">
         <div class="flex items-center gap-3">
-          <div id="liveIndicator" class="w-2 h-2 rounded-full bg-green-400 pulse"></div>
+          <div class="w-2 h-2 rounded-full bg-green-400 pulse"></div>
           <span class="font-semibold text-sm">LendBook</span>
           <span class="text-gray-600 text-sm">·</span>
           <span class="text-gray-400 text-sm">Cost Dashboard</span>
@@ -83,7 +86,7 @@
         <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
         </svg>
-        <span>Cloud Monitoring unavailable — showing fixed cost estimates only. Ensure the service account has <code class="bg-amber-500/20 px-1 rounded">roles/monitoring.viewer</code>.</span>
+        Cloud Monitoring unavailable — showing fixed cost estimates only.
       </div>
 
       <!-- Summary Cards -->
@@ -98,7 +101,6 @@
           <div id="totalCost" class="stat text-3xl font-bold text-white">—</div>
           <div class="text-xs text-gray-600 mt-1.5">USD this month</div>
         </div>
-
         <div class="card rounded-2xl p-5">
           <div class="text-xs text-gray-500 mb-3 flex items-center gap-1.5">
             <svg class="w-3.5 h-3.5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -109,7 +111,6 @@
           <div id="reqToday" class="stat text-3xl font-bold text-blue-400">—</div>
           <div class="text-xs text-gray-600 mt-1.5">API calls</div>
         </div>
-
         <div class="card rounded-2xl p-5">
           <div class="text-xs text-gray-500 mb-3 flex items-center gap-1.5">
             <svg class="w-3.5 h-3.5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -120,7 +121,6 @@
           <div id="reqMonth" class="stat text-3xl font-bold text-purple-400">—</div>
           <div class="text-xs text-gray-600 mt-1.5">total requests</div>
         </div>
-
         <div class="card rounded-2xl p-5">
           <div class="text-xs text-gray-500 mb-3 flex items-center gap-1.5">
             <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -135,20 +135,12 @@
 
       <!-- Charts Row -->
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
-
-        <!-- Request Trend Chart -->
         <div class="card rounded-2xl p-5 lg:col-span-2">
-          <div class="flex items-center justify-between mb-5">
-            <div>
-              <div class="text-sm font-medium">Request Volume</div>
-              <div class="text-xs text-gray-500 mt-0.5">Last 30 days</div>
-            </div>
-          </div>
-          <div id="noDataMsg" class="hidden text-center py-12 text-gray-600 text-sm">No request data available yet</div>
+          <div class="text-sm font-medium mb-1">Request Volume</div>
+          <div class="text-xs text-gray-500 mb-5">Last 30 days</div>
+          <div id="noDataMsg" class="hidden text-center py-12 text-gray-600 text-sm">No data yet — requests will appear once traffic hits the API</div>
           <canvas id="requestChart"></canvas>
         </div>
-
-        <!-- Cost Breakdown -->
         <div class="card rounded-2xl p-5">
           <div class="text-sm font-medium mb-1">Cost Breakdown</div>
           <div class="text-xs text-gray-500 mb-5">Current month estimate</div>
@@ -165,27 +157,23 @@
         </div>
       </div>
 
-      <!-- Cost Table + Free Tier -->
+      <!-- Cost Table -->
       <div class="card rounded-2xl p-5">
         <div class="text-sm font-medium mb-4">Service Breakdown</div>
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="text-xs text-gray-500 uppercase tracking-wide border-b border-gray-800">
-                <th class="text-left pb-3 font-medium">Service</th>
-                <th class="text-right pb-3 font-medium">Monthly Cost</th>
-                <th class="text-right pb-3 font-medium hidden sm:table-cell">Tier</th>
-                <th class="text-right pb-3 font-medium hidden md:table-cell">Notes</th>
-              </tr>
-            </thead>
-            <tbody id="costTable" class="divide-y divide-gray-800/50"></tbody>
-          </table>
-        </div>
-
-        <!-- Free Tier Progress -->
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-xs text-gray-500 uppercase tracking-wide border-b border-gray-800">
+              <th class="text-left pb-3 font-medium">Service</th>
+              <th class="text-right pb-3 font-medium">Monthly Cost</th>
+              <th class="text-right pb-3 font-medium hidden sm:table-cell">Tier</th>
+              <th class="text-right pb-3 font-medium hidden md:table-cell">Notes</th>
+            </tr>
+          </thead>
+          <tbody id="costTable" class="divide-y divide-gray-800/50"></tbody>
+        </table>
         <div class="mt-5 pt-5 border-t border-gray-800/50">
           <div class="flex justify-between items-center text-xs mb-2">
-            <span class="text-gray-500">Cloud Run free tier usage (requests/month)</span>
+            <span class="text-gray-500">Cloud Run free tier (requests/month)</span>
             <span id="freeTierText" class="text-gray-400 font-mono">— / 2,000,000</span>
           </div>
           <div class="w-full bg-gray-800/60 rounded-full h-1.5 overflow-hidden">
@@ -199,12 +187,10 @@
   </div>
 
   <script>
-    const API_BASE = window.location.origin + '/api/v1';
+    const API_BASE = 'https://lendbook-be-638388576672.asia-south1.run.app/api/v1';
     let token = localStorage.getItem('lb_token');
     let reqChart = null, donutChart = null;
-    let autoRefreshTimer = null;
 
-    // ── AUTH ──────────────────────────────────────────────
     async function login() {
       const email = document.getElementById('email').value.trim();
       const password = document.getElementById('password').value;
@@ -219,54 +205,38 @@
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({email, password}),
         });
-        if (!res.ok) {
-          errEl.textContent = res.status === 401 ? 'Invalid email or password' : `Error ${res.status}`;
-          errEl.classList.remove('hidden');
-          return;
-        }
-        const data = await res.json();
-        token = data.access_token;
+        if (!res.ok) { errEl.textContent = res.status === 401 ? 'Invalid credentials' : `Error ${res.status}`; errEl.classList.remove('hidden'); return; }
+        token = (await res.json()).access_token;
         localStorage.setItem('lb_token', token);
         showDashboard();
-      } catch {
-        errEl.textContent = 'Cannot reach the API. Check your connection.';
-        errEl.classList.remove('hidden');
-      } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<span>Sign in</span>';
-      }
+      } catch { errEl.textContent = 'Cannot reach API'; errEl.classList.remove('hidden'); }
+      finally { btn.disabled = false; btn.innerHTML = '<span>Sign in</span>'; }
     }
 
     function logout() {
-      localStorage.removeItem('lb_token');
-      token = null;
-      clearInterval(autoRefreshTimer);
+      localStorage.removeItem('lb_token'); token = null;
       document.getElementById('dashboard').classList.add('hidden');
       document.getElementById('loginScreen').classList.remove('hidden');
     }
 
-    // ── DATA ──────────────────────────────────────────────
     async function fetchMetrics() {
-      const res = await fetch(`${API_BASE}/admin/metrics`, {
-        headers: {'Authorization': `Bearer ${token}`},
-      });
+      const res = await fetch(`${API_BASE}/admin/metrics`, { headers: {'Authorization': `Bearer ${token}`} });
       if (res.status === 401 || res.status === 403) { logout(); return null; }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     }
 
-    // ── RENDER ────────────────────────────────────────────
     const fmt = n => n.toLocaleString();
     const fmtUSD = n => n === 0 ? '$0.00' : `$${n.toFixed(2)}`;
 
-    function renderCards(data) {
-      document.getElementById('totalCost').textContent = fmtUSD(data.cost_estimate.total_usd);
-      document.getElementById('reqToday').textContent = fmt(data.requests.today);
-      document.getElementById('reqMonth').textContent = fmt(data.requests.this_month);
-      document.getElementById('costPer1k').textContent = `$${data.cost_estimate.cost_per_1k_requests_usd.toFixed(4)}`;
-      document.getElementById('periodBadge').textContent = data.period;
-      document.getElementById('lastUpdated').textContent = `Updated ${new Date(data.last_updated).toLocaleTimeString()}`;
-      document.getElementById('errorBanner').classList.toggle('hidden', !data.error);
+    function renderCards(d) {
+      document.getElementById('totalCost').textContent = fmtUSD(d.cost_estimate.total_usd);
+      document.getElementById('reqToday').textContent = fmt(d.requests.today);
+      document.getElementById('reqMonth').textContent = fmt(d.requests.this_month);
+      document.getElementById('costPer1k').textContent = `$${d.cost_estimate.cost_per_1k_requests_usd.toFixed(4)}`;
+      document.getElementById('periodBadge').textContent = d.period;
+      document.getElementById('lastUpdated').textContent = `Updated ${new Date(d.last_updated).toLocaleTimeString()}`;
+      document.getElementById('errorBanner').classList.toggle('hidden', !d.error);
     }
 
     function renderRequestChart(daily) {
@@ -274,77 +244,58 @@
       const noData = document.getElementById('noDataMsg');
       if (!daily.length) { canvas.classList.add('hidden'); noData.classList.remove('hidden'); return; }
       canvas.classList.remove('hidden'); noData.classList.add('hidden');
-
-      const labels = daily.map(d => d.date.slice(5));
-      const counts = daily.map(d => d.count);
-      const maxVal = Math.max(...counts, 1);
-
+      const maxVal = Math.max(...daily.map(d => d.count), 1);
       if (reqChart) reqChart.destroy();
       reqChart = new Chart(canvas, {
         type: 'bar',
-        data: {
-          labels,
-          datasets: [{
-            data: counts,
-            backgroundColor: counts.map(c => `rgba(96,165,250,${0.3 + 0.7 * c / maxVal})`),
-            borderColor: 'rgba(96,165,250,0.8)',
-            borderWidth: 1,
-            borderRadius: 3,
-          }],
-        },
-        options: {
-          responsive: true,
-          plugins: { legend: { display: false }, tooltip: {
-            callbacks: { label: ctx => ` ${fmt(ctx.raw)} requests` }
-          }},
+        data: { labels: daily.map(d => d.date.slice(5)), datasets: [{
+          data: daily.map(d => d.count),
+          backgroundColor: daily.map(d => `rgba(96,165,250,${0.3 + 0.7 * d.count / maxVal})`),
+          borderColor: 'rgba(96,165,250,0.8)', borderWidth: 1, borderRadius: 3,
+        }]},
+        options: { responsive: true, plugins: { legend: { display: false },
+          tooltip: { callbacks: { label: c => ` ${fmt(c.raw)} requests` }}},
           scales: {
-            x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#6b7280', maxTicksLimit: 12, font: {size:11} } },
+            x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#6b7280', maxTicksLimit: 12, font: {size:11} }},
             y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#6b7280', font: {size:11} }, beginAtZero: true },
-          },
-        },
+          }},
       });
     }
 
-    function renderCostDonut(costs) {
+    function renderCostDonut(c) {
       const services = ['Cloud SQL', 'Cloud Run', 'Cloud Storage'];
-      const values = [costs.cloud_sql_usd, costs.cloud_run_usd, costs.cloud_storage_usd];
+      const values = [c.cloud_sql_usd, c.cloud_run_usd, c.cloud_storage_usd];
       const colors = ['#8b5cf6', '#3b82f6', '#10b981'];
-
       if (donutChart) donutChart.destroy();
       donutChart = new Chart(document.getElementById('costChart'), {
         type: 'doughnut',
-        data: { labels: services, datasets: [{ data: values, backgroundColor: colors, borderWidth: 0, hoverOffset: 4 }] },
-        options: { cutout: '68%', plugins: { legend: { display: false }, tooltip: {
-          callbacks: { label: ctx => ` ${fmtUSD(ctx.raw)}` }
-        }}},
+        data: { labels: services, datasets: [{ data: values, backgroundColor: colors, borderWidth: 0, hoverOffset: 4 }]},
+        options: { cutout: '68%', plugins: { legend: { display: false },
+          tooltip: { callbacks: { label: ctx => ` ${fmtUSD(ctx.raw)}` }}}},
       });
-
-      document.getElementById('donutTotal').textContent = fmtUSD(costs.total_usd);
+      document.getElementById('donutTotal').textContent = fmtUSD(c.total_usd);
       document.getElementById('costLegend').innerHTML = services.map((s, i) => `
         <div class="flex justify-between items-center">
           <div class="flex items-center gap-2">
-            <div class="w-2 h-2 rounded-full shrink-0" style="background:${colors[i]}"></div>
+            <div class="w-2 h-2 rounded-full" style="background:${colors[i]}"></div>
             <span class="text-gray-400 text-sm">${s}</span>
           </div>
           <span class="font-medium text-sm tabular-nums">${fmtUSD(values[i])}</span>
         </div>`).join('');
     }
 
-    function renderCostTable(costs) {
+    function renderTable(c) {
       const rows = [
-        { service: 'Cloud SQL', sub: 'PostgreSQL 16 · db-f1-micro', cost: costs.cloud_sql_usd, tier: 'Fixed', note: '~$10/mo always-on', color: '#8b5cf6' },
-        { service: 'Cloud Run', sub: 'FastAPI · scales to zero', cost: costs.cloud_run_usd, tier: 'Pay per use', note: 'Free ≤ 2M req/mo', color: '#3b82f6' },
-        { service: 'Cloud Storage', sub: 'Document uploads (GCS)', cost: costs.cloud_storage_usd, tier: 'Standard', note: '~$0.023/GB/mo', color: '#10b981' },
+        { name: 'Cloud SQL', sub: 'PostgreSQL 16 · db-f1-micro', cost: c.cloud_sql_usd, tier: 'Fixed', note: '~$10/mo always-on', color: '#8b5cf6' },
+        { name: 'Cloud Run', sub: 'FastAPI · scales to zero',    cost: c.cloud_run_usd, tier: 'Pay per use', note: 'Free ≤ 2M req/mo', color: '#3b82f6' },
+        { name: 'Cloud Storage', sub: 'Document uploads (GCS)',  cost: c.cloud_storage_usd, tier: 'Standard', note: '~$0.023/GB/mo', color: '#10b981' },
       ];
       document.getElementById('costTable').innerHTML = rows.map(r => `
         <tr>
           <td class="py-3">
             <div class="flex items-center gap-2.5">
               <div class="w-1.5 h-8 rounded-full shrink-0" style="background:${r.color}"></div>
-              <div>
-                <div class="text-gray-200 font-medium">${r.service}</div>
-                <div class="text-xs text-gray-500 mt-0.5">${r.sub}</div>
-              </div>
+              <div><div class="text-gray-200 font-medium">${r.name}</div><div class="text-xs text-gray-500 mt-0.5">${r.sub}</div></div>
             </div>
           </td>
           <td class="py-3 text-right font-semibold stat">${fmtUSD(r.cost)}</td>
@@ -353,57 +304,38 @@
         </tr>`).join('');
     }
 
-    function renderFreeTier(requests) {
-      const used = Math.max(0, 2_000_000 - requests.free_tier_remaining);
+    function renderFreeTier(r) {
+      const used = Math.max(0, 2_000_000 - r.free_tier_remaining);
       const pct = Math.min((used / 2_000_000) * 100, 100);
       document.getElementById('freeTierText').textContent = `${fmt(used)} / 2,000,000`;
-      document.getElementById('freeTierBar').style.width = `${pct}%`;
-      const bar = document.getElementById('freeTierBar');
-      bar.style.background = pct > 80 ? '#ef4444' : pct > 50 ? '#f59e0b' : '#10b981';
-      const note = document.getElementById('freeTierNote');
-      if (pct < 5) {
-        note.textContent = `${fmt(requests.free_tier_remaining)} requests remaining in free tier this month`;
-        note.style.color = '#16a34a';
-      } else if (pct > 80) {
-        note.textContent = 'Approaching free tier limit — Cloud Run charges start after 2M requests';
-        note.style.color = '#dc2626';
-      } else {
-        note.textContent = '';
-      }
+      document.getElementById('freeTierBar').style.cssText = `width:${pct}%;background:${pct > 80 ? '#ef4444' : pct > 50 ? '#f59e0b' : '#10b981'}`;
+      document.getElementById('freeTierNote').textContent = pct < 5
+        ? `${fmt(r.free_tier_remaining)} requests remaining in free tier` : '';
     }
 
-    // ── ORCHESTRATION ─────────────────────────────────────
     async function refresh(manual = false) {
       const icon = document.getElementById('refreshIcon');
       if (manual) icon.classList.add('animate-spin');
       try {
         const data = await fetchMetrics();
         if (!data) return;
-        renderCards(data);
-        renderRequestChart(data.requests.daily);
-        renderCostDonut(data.cost_estimate);
-        renderCostTable(data.cost_estimate);
+        renderCards(data); renderRequestChart(data.requests.daily);
+        renderCostDonut(data.cost_estimate); renderTable(data.cost_estimate);
         renderFreeTier(data.requests);
-      } catch (e) {
-        console.error('Refresh failed:', e);
-      } finally {
-        if (manual) setTimeout(() => icon.classList.remove('animate-spin'), 600);
-      }
+      } catch(e) { console.error('Refresh failed:', e); }
+      finally { if (manual) setTimeout(() => icon.classList.remove('animate-spin'), 600); }
     }
 
     function showDashboard() {
       document.getElementById('loginScreen').classList.add('hidden');
       document.getElementById('dashboard').classList.remove('hidden');
       refresh();
-      autoRefreshTimer = setInterval(refresh, 60_000);
+      setInterval(refresh, 60_000);
     }
 
-    // ── BOOT ──────────────────────────────────────────────
     window.addEventListener('load', () => {
       if (token) showDashboard();
-      document.getElementById('password').addEventListener('keydown', e => {
-        if (e.key === 'Enter') login();
-      });
+      document.getElementById('password').addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
     });
   </script>
 </body>
