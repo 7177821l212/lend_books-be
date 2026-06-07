@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.rest.routes import auth, collectors, customers, health, loans, payments, reports
+from src.api.rest.routes import auth, collectors, customers, health, loans, payments, reports, uploads
 from src.config.settings import settings
 
 
@@ -28,5 +28,6 @@ def create_app() -> FastAPI:
     app.include_router(payments.router, prefix="/api/v1")
     app.include_router(collectors.router, prefix="/api/v1")
     app.include_router(reports.router, prefix="/api/v1")
+    app.include_router(uploads.router, prefix="/api/v1")
 
     return app

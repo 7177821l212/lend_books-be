@@ -1,6 +1,8 @@
-"""Reports service — overdue list + blacklisted + analytics."""
+"""Reports service — overdue list + blacklisted + analytics with filters."""
 
 from __future__ import annotations
+
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,17 +20,36 @@ from src.schemas.dashboard import (
 )
 
 
+def _period_start(period: str | None) -> date | None:
+    today = datetime.now(tz=timezone.utc).date()
+    if period == "week":
+        return today - timedelta(days=7)
+    if period == "month":
+        return today - timedelta(days=30)
+    if period == "year":
+        return today - timedelta(days=365)
+    return None
+
+
 class ReportService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def overview(self, current_user: dict) -> ReportsResponse:
+    async def overview(
+        self,
+        current_user: dict,
+        collector_id: str | None = None,
+        period: str | None = None,
+    ) -> ReportsResponse:
         if current_user.get("role") != UserRole.INVESTOR.value:
             raise ForbiddenError("only investor can view reports")
 
-        overdue_rows = await self._overdue()
+        since = _period_start(period)
+        overdue_rows = await self._overdue(collector_id=collector_id)
         blacklisted = await self._blacklisted()
-        interest_earned, avg_loan, avg_rate = await self._analytics()
+        interest_earned, avg_loan, avg_rate = await self._analytics(
+            collector_id=collector_id, since=since
+        )
 
         return ReportsResponse(
             overdue=overdue_rows,
@@ -38,8 +59,8 @@ class ReportService:
             avg_interest_rate=avg_rate,
         )
 
-    async def _overdue(self) -> list[OverdueLoanRow]:
-        result = await self.session.execute(
+    async def _overdue(self, collector_id: str | None = None) -> list[OverdueLoanRow]:
+        q = (
             select(
                 Loan.id.label("loan_id"),
                 Loan.customer_id,
@@ -63,6 +84,10 @@ class ReportService:
             )
             .order_by(func.sum(Installment.due_amount - Installment.paid_amount).desc())
         )
+        if collector_id:
+            q = q.where(Loan.collector_id == collector_id)
+
+        result = await self.session.execute(q)
         return [
             OverdueLoanRow(
                 loan_id=r.loan_id,
@@ -90,24 +115,32 @@ class ReportService:
             for c in result.scalars()
         ]
 
-    async def _analytics(self) -> tuple[int, int, float]:
-        # Total interest = sum of profits across all loans (closed yields full, active = pro-rated)
-        # For a simple report, use the full snapshot (treating it as "potential interest")
+    async def _analytics(
+        self, collector_id: str | None = None, since: date | None = None
+    ) -> tuple[int, int, float]:
+        filters = []
+        if collector_id:
+            filters.append(Loan.collector_id == collector_id)
+        if since:
+            filters.append(Loan.start_date >= since)
+
         interest = (
             await self.session.execute(
-                select(func.coalesce(func.sum(Loan.profit), 0))
+                select(func.coalesce(func.sum(Loan.profit), 0)).where(*filters)
             )
         ).scalar_one()
 
         avg_principal = (
-            await self.session.execute(select(func.coalesce(func.avg(Loan.principal), 0)))
+            await self.session.execute(
+                select(func.coalesce(func.avg(Loan.principal), 0)).where(*filters)
+            )
         ).scalar_one()
 
-        # Average PCT-style interest only (FIXED amounts are not percentages)
         avg_pct = (
             await self.session.execute(
                 select(func.coalesce(func.avg(Loan.interest_value), 0)).where(
-                    Loan.interest_type == InterestType.PCT.value
+                    Loan.interest_type == InterestType.PCT.value,
+                    *filters,
                 )
             )
         ).scalar_one()
