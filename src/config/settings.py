@@ -9,8 +9,9 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     DATABASE_URL: str
-    DATABASE_POOL_SIZE: int = 10
-    DATABASE_MAX_OVERFLOW: int = 20
+    DATABASE_POOL_SIZE: int = 5
+    DATABASE_MAX_OVERFLOW: int = 10
+    DATABASE_POOL_RECYCLE: int = 1800
 
     JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
