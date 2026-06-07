@@ -1,6 +1,6 @@
 """Customer API routes."""
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.dependencies import get_current_user, get_db
@@ -13,7 +13,6 @@ from src.schemas.customer import (
     CustomerResponse,
     CustomerUpdate,
     DocumentResponse,
-    DocumentUploadRequest,
 )
 
 router = APIRouter(prefix="/customers", tags=["customers"])
@@ -103,8 +102,12 @@ async def list_documents(
 )
 async def upload_document(
     customer_id: str,
-    body: DocumentUploadRequest,
+    doc_type: str = Form(...),
+    file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> DocumentResponse:
-    return await CustomerDocumentService(db).create(current_user, customer_id, body)
+    content = await file.read()
+    return await CustomerDocumentService(db).create(
+        current_user, customer_id, doc_type, content, file.filename or "document"
+    )

@@ -1,13 +1,15 @@
-"""Customer document service — list + upload (URL-only for now)."""
+"""Customer document service — list + upload to GCS."""
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.config.settings import settings
 from src.constants.enums import UserRole
 from src.core.exceptions.base import ForbiddenError, NotFoundError
 from src.data.models.postgres.customer import Customer
 from src.data.models.postgres.customer_document import CustomerDocument
 from src.schemas.customer import DocumentResponse, DocumentUploadRequest
+from src.utils.gcs import GCSClient, get_gcs_path
 
 
 class CustomerDocumentService:
@@ -24,16 +26,24 @@ class CustomerDocumentService:
         return [DocumentResponse.model_validate(d) for d in result.scalars()]
 
     async def create(
-        self, current_user: dict, customer_id: str, body: DocumentUploadRequest
+        self, current_user: dict, customer_id: str, doc_type: str, file_content: bytes, filename: str
     ) -> DocumentResponse:
         if current_user.get("role") != UserRole.INVESTOR.value:
             raise ForbiddenError("only investor can upload customer documents")
         await self._must_view(current_user, customer_id)
 
+        if not settings.GCS_BUCKET_NAME:
+            raise ForbiddenError("document upload is not configured")
+
+        gcs = GCSClient(settings.GCS_BUCKET_NAME)
+        blob_path = get_gcs_path(customer_id, doc_type.strip(), filename)
+        gcs.upload_from_string(blob_path, file_content, content_type="application/octet-stream")
+        file_url = f"gs://{settings.GCS_BUCKET_NAME}/{blob_path}"
+
         doc = CustomerDocument(
             customer_id=customer_id,
-            doc_type=body.doc_type.strip(),
-            file_url=body.file_url.strip(),
+            doc_type=doc_type.strip(),
+            file_url=file_url,
             uploaded_by=current_user["sub"],
         )
         self.session.add(doc)
