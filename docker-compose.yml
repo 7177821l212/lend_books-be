@@ -13,6 +13,8 @@ services:
         condition: service_healthy
     volumes:
       - ./src:/app/src
+      # Add this line once you place your GCS service-account key at ./gcs-key.json:
+      # - ./gcs-key.json:/app/gcs-key.json:ro
 
   db:
     image: postgres:16-alpine

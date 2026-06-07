@@ -22,8 +22,8 @@ class CollectorService:
         self._require_investor(current_user)
         result = await self.session.execute(
             select(User)
-            .where(User.role == UserRole.COLLECTOR.value, User.is_active.is_(True))
-            .order_by(User.name)
+            .where(User.role == UserRole.COLLECTOR.value)
+            .order_by(User.is_active.desc(), User.name)
         )
         return [CollectorResponse.model_validate(u) for u in result.scalars()]
 
@@ -44,7 +44,6 @@ class CollectorService:
         )
         self.session.add(user)
         await self.session.flush()
-        await self.session.commit()
         await self.session.refresh(user)
         return CollectorResponse.model_validate(user)
 
@@ -86,6 +85,50 @@ class CollectorService:
         await self.session.refresh(user)
         return CollectorResponse.model_validate(user)
 
+    async def activate(self, current_user: dict, collector_id: str) -> CollectorResponse:
+        self._require_investor(current_user)
+        result = await self.session.execute(
+            select(User).where(
+                User.id == collector_id,
+                User.role == UserRole.COLLECTOR.value,
+            )
+        )
+        user = result.scalar()
+        if not user:
+            from src.core.exceptions.base import NotFoundError
+            raise NotFoundError("collector", collector_id)
+        user.is_active = True
+        await self.session.flush()
+        await self.session.refresh(user)
+        return CollectorResponse.model_validate(user)
+
+    async def delete(self, current_user: dict, collector_id: str) -> None:
+        self._require_investor(current_user)
+        result = await self.session.execute(
+            select(User).where(
+                User.id == collector_id,
+                User.role == UserRole.COLLECTOR.value,
+            )
+        )
+        user = result.scalar()
+        if not user:
+            from src.core.exceptions.base import NotFoundError
+            raise NotFoundError("collector", collector_id)
+        from src.data.models.postgres.loan import Loan
+        from src.constants.enums import LoanStatus
+        from sqlalchemy import func
+        active_count = (await self.session.execute(
+            select(func.count(Loan.id)).where(
+                Loan.collector_id == collector_id,
+                Loan.status == LoanStatus.ACTIVE.value,
+            )
+        )).scalar_one()
+        if int(active_count) > 0:
+            from src.core.exceptions.base import ConflictError
+            raise ConflictError("reassign or close active loans before deleting this collector")
+        await self.session.delete(user)
+        await self.session.flush()
+
     async def deactivate(self, current_user: dict, collector_id: str) -> CollectorResponse:
         self._require_investor(current_user)
         result = await self.session.execute(
@@ -99,6 +142,6 @@ class CollectorService:
             from src.core.exceptions.base import NotFoundError
             raise NotFoundError("collector", collector_id)
         user.is_active = False
-        await self.session.commit()
+        await self.session.flush()
         await self.session.refresh(user)
         return CollectorResponse.model_validate(user)
