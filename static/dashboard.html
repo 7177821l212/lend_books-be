@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LendBook · Cost Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    * { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+    .card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); }
+    .stat { font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+    .pulse { animation: pulse 2s cubic-bezier(.4,0,.6,1) infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    #loginScreen { background: radial-gradient(ellipse at 50% 0%, rgba(59,130,246,0.15) 0%, transparent 70%), #030712; }
+  </style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen">
+
+  <!-- ── LOGIN ── -->
+  <div id="loginScreen" class="fixed inset-0 flex items-center justify-center">
+    <div class="card rounded-2xl p-8 w-full max-w-sm shadow-2xl">
+      <div class="text-center mb-8">
+        <div class="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-blue-600/20 border border-blue-500/30 mb-4">
+          <svg class="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+          </svg>
+        </div>
+        <h1 class="text-xl font-semibold">Cost Dashboard</h1>
+        <p class="text-gray-500 text-sm mt-1">LendBook Infrastructure</p>
+      </div>
+      <div class="space-y-3">
+        <div>
+          <label class="block text-xs text-gray-500 mb-1.5 uppercase tracking-wide">Email</label>
+          <input id="email" type="email" value="owner@lendbook.app" autocomplete="email"
+            class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 transition-colors">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1.5 uppercase tracking-wide">Password</label>
+          <input id="password" type="password" autocomplete="current-password"
+            class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 transition-colors">
+        </div>
+        <div id="loginError" class="hidden text-red-400 text-xs bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2"></div>
+        <button id="loginBtn" onclick="login()"
+          class="w-full bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white rounded-lg py-2.5 text-sm font-medium transition-colors mt-1 flex items-center justify-center gap-2">
+          <span>Sign in</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── DASHBOARD ── -->
+  <div id="dashboard" class="hidden min-h-screen">
+
+    <!-- Header -->
+    <div class="border-b border-gray-800/60 bg-gray-950/80 backdrop-blur sticky top-0 z-10">
+      <div class="max-w-7xl mx-auto px-6 py-3.5 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <div id="liveIndicator" class="w-2 h-2 rounded-full bg-green-400 pulse"></div>
+          <span class="font-semibold text-sm">LendBook</span>
+          <span class="text-gray-600 text-sm">·</span>
+          <span class="text-gray-400 text-sm">Cost Dashboard</span>
+          <span id="periodBadge" class="ml-1 text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full font-mono"></span>
+        </div>
+        <div class="flex items-center gap-5">
+          <span id="lastUpdated" class="text-xs text-gray-600 hidden sm:block"></span>
+          <button onclick="refresh(true)"
+            class="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1 transition-colors">
+            <svg id="refreshIcon" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+            </svg>
+            Refresh
+          </button>
+          <button onclick="logout()" class="text-xs text-gray-600 hover:text-gray-400 transition-colors">Sign out</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="max-w-7xl mx-auto px-6 py-6 space-y-5">
+
+      <!-- Error banner -->
+      <div id="errorBanner" class="hidden bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-3 text-sm text-amber-400 flex items-center gap-2">
+        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+        </svg>
+        <span>Cloud Monitoring unavailable — showing fixed cost estimates only. Ensure the service account has <code class="bg-amber-500/20 px-1 rounded">roles/monitoring.viewer</code>.</span>
+      </div>
+
+      <!-- Summary Cards -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="card rounded-2xl p-5">
+          <div class="text-xs text-gray-500 mb-3 flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            Est. Monthly Cost
+          </div>
+          <div id="totalCost" class="stat text-3xl font-bold text-white">—</div>
+          <div class="text-xs text-gray-600 mt-1.5">USD this month</div>
+        </div>
+
+        <div class="card rounded-2xl p-5">
+          <div class="text-xs text-gray-500 mb-3 flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+            </svg>
+            Requests Today
+          </div>
+          <div id="reqToday" class="stat text-3xl font-bold text-blue-400">—</div>
+          <div class="text-xs text-gray-600 mt-1.5">API calls</div>
+        </div>
+
+        <div class="card rounded-2xl p-5">
+          <div class="text-xs text-gray-500 mb-3 flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+            </svg>
+            This Month
+          </div>
+          <div id="reqMonth" class="stat text-3xl font-bold text-purple-400">—</div>
+          <div class="text-xs text-gray-600 mt-1.5">total requests</div>
+        </div>
+
+        <div class="card rounded-2xl p-5">
+          <div class="text-xs text-gray-500 mb-3 flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/>
+            </svg>
+            Cost / 1k Requests
+          </div>
+          <div id="costPer1k" class="stat text-3xl font-bold text-amber-400">—</div>
+          <div class="text-xs text-gray-600 mt-1.5">USD</div>
+        </div>
+      </div>
+
+      <!-- Charts Row -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+
+        <!-- Request Trend Chart -->
+        <div class="card rounded-2xl p-5 lg:col-span-2">
+          <div class="flex items-center justify-between mb-5">
+            <div>
+              <div class="text-sm font-medium">Request Volume</div>
+              <div class="text-xs text-gray-500 mt-0.5">Last 30 days</div>
+            </div>
+          </div>
+          <div id="noDataMsg" class="hidden text-center py-12 text-gray-600 text-sm">No request data available yet</div>
+          <canvas id="requestChart"></canvas>
+        </div>
+
+        <!-- Cost Breakdown -->
+        <div class="card rounded-2xl p-5">
+          <div class="text-sm font-medium mb-1">Cost Breakdown</div>
+          <div class="text-xs text-gray-500 mb-5">Current month estimate</div>
+          <div class="flex justify-center">
+            <div style="width:180px;height:180px;position:relative">
+              <canvas id="costChart"></canvas>
+              <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none">
+                <div id="donutTotal" class="stat text-xl font-bold text-white">—</div>
+                <div class="text-xs text-gray-500">total</div>
+              </div>
+            </div>
+          </div>
+          <div id="costLegend" class="mt-5 space-y-2.5"></div>
+        </div>
+      </div>
+
+      <!-- Cost Table + Free Tier -->
+      <div class="card rounded-2xl p-5">
+        <div class="text-sm font-medium mb-4">Service Breakdown</div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-xs text-gray-500 uppercase tracking-wide border-b border-gray-800">
+                <th class="text-left pb-3 font-medium">Service</th>
+                <th class="text-right pb-3 font-medium">Monthly Cost</th>
+                <th class="text-right pb-3 font-medium hidden sm:table-cell">Tier</th>
+                <th class="text-right pb-3 font-medium hidden md:table-cell">Notes</th>
+              </tr>
+            </thead>
+            <tbody id="costTable" class="divide-y divide-gray-800/50"></tbody>
+          </table>
+        </div>
+
+        <!-- Free Tier Progress -->
+        <div class="mt-5 pt-5 border-t border-gray-800/50">
+          <div class="flex justify-between items-center text-xs mb-2">
+            <span class="text-gray-500">Cloud Run free tier usage (requests/month)</span>
+            <span id="freeTierText" class="text-gray-400 font-mono">— / 2,000,000</span>
+          </div>
+          <div class="w-full bg-gray-800/60 rounded-full h-1.5 overflow-hidden">
+            <div id="freeTierBar" class="bg-green-500 h-full rounded-full transition-all duration-700" style="width:0%"></div>
+          </div>
+          <div id="freeTierNote" class="text-xs text-green-600 mt-1.5"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.origin + '/api/v1';
+    let token = localStorage.getItem('lb_token');
+    let reqChart = null, donutChart = null;
+    let autoRefreshTimer = null;
+
+    // ── AUTH ──────────────────────────────────────────────
+    async function login() {
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+      const errEl = document.getElementById('loginError');
+      const btn = document.getElementById('loginBtn');
+      errEl.classList.add('hidden');
+      btn.disabled = true;
+      btn.innerHTML = '<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg><span>Signing in…</span>';
+      try {
+        const res = await fetch(`${API_BASE}/auth/login`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({email, password}),
+        });
+        if (!res.ok) {
+          errEl.textContent = res.status === 401 ? 'Invalid email or password' : `Error ${res.status}`;
+          errEl.classList.remove('hidden');
+          return;
+        }
+        const data = await res.json();
+        token = data.access_token;
+        localStorage.setItem('lb_token', token);
+        showDashboard();
+      } catch {
+        errEl.textContent = 'Cannot reach the API. Check your connection.';
+        errEl.classList.remove('hidden');
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span>Sign in</span>';
+      }
+    }
+
+    function logout() {
+      localStorage.removeItem('lb_token');
+      token = null;
+      clearInterval(autoRefreshTimer);
+      document.getElementById('dashboard').classList.add('hidden');
+      document.getElementById('loginScreen').classList.remove('hidden');
+    }
+
+    // ── DATA ──────────────────────────────────────────────
+    async function fetchMetrics() {
+      const res = await fetch(`${API_BASE}/admin/metrics`, {
+        headers: {'Authorization': `Bearer ${token}`},
+      });
+      if (res.status === 401 || res.status === 403) { logout(); return null; }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    }
+
+    // ── RENDER ────────────────────────────────────────────
+    const fmt = n => n.toLocaleString();
+    const fmtUSD = n => n === 0 ? '$0.00' : `$${n.toFixed(2)}`;
+
+    function renderCards(data) {
+      document.getElementById('totalCost').textContent = fmtUSD(data.cost_estimate.total_usd);
+      document.getElementById('reqToday').textContent = fmt(data.requests.today);
+      document.getElementById('reqMonth').textContent = fmt(data.requests.this_month);
+      document.getElementById('costPer1k').textContent = `$${data.cost_estimate.cost_per_1k_requests_usd.toFixed(4)}`;
+      document.getElementById('periodBadge').textContent = data.period;
+      document.getElementById('lastUpdated').textContent = `Updated ${new Date(data.last_updated).toLocaleTimeString()}`;
+      document.getElementById('errorBanner').classList.toggle('hidden', !data.error);
+    }
+
+    function renderRequestChart(daily) {
+      const canvas = document.getElementById('requestChart');
+      const noData = document.getElementById('noDataMsg');
+      if (!daily.length) { canvas.classList.add('hidden'); noData.classList.remove('hidden'); return; }
+      canvas.classList.remove('hidden'); noData.classList.add('hidden');
+
+      const labels = daily.map(d => d.date.slice(5));
+      const counts = daily.map(d => d.count);
+      const maxVal = Math.max(...counts, 1);
+
+      if (reqChart) reqChart.destroy();
+      reqChart = new Chart(canvas, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{
+            data: counts,
+            backgroundColor: counts.map(c => `rgba(96,165,250,${0.3 + 0.7 * c / maxVal})`),
+            borderColor: 'rgba(96,165,250,0.8)',
+            borderWidth: 1,
+            borderRadius: 3,
+          }],
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { display: false }, tooltip: {
+            callbacks: { label: ctx => ` ${fmt(ctx.raw)} requests` }
+          }},
+          scales: {
+            x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#6b7280', maxTicksLimit: 12, font: {size:11} } },
+            y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#6b7280', font: {size:11} }, beginAtZero: true },
+          },
+        },
+      });
+    }
+
+    function renderCostDonut(costs) {
+      const services = ['Cloud SQL', 'Cloud Run', 'Cloud Storage'];
+      const values = [costs.cloud_sql_usd, costs.cloud_run_usd, costs.cloud_storage_usd];
+      const colors = ['#8b5cf6', '#3b82f6', '#10b981'];
+
+      if (donutChart) donutChart.destroy();
+      donutChart = new Chart(document.getElementById('costChart'), {
+        type: 'doughnut',
+        data: { labels: services, datasets: [{ data: values, backgroundColor: colors, borderWidth: 0, hoverOffset: 4 }] },
+        options: { cutout: '68%', plugins: { legend: { display: false }, tooltip: {
+          callbacks: { label: ctx => ` ${fmtUSD(ctx.raw)}` }
+        }}},
+      });
+
+      document.getElementById('donutTotal').textContent = fmtUSD(costs.total_usd);
+      document.getElementById('costLegend').innerHTML = services.map((s, i) => `
+        <div class="flex justify-between items-center">
+          <div class="flex items-center gap-2">
+            <div class="w-2 h-2 rounded-full shrink-0" style="background:${colors[i]}"></div>
+            <span class="text-gray-400 text-sm">${s}</span>
+          </div>
+          <span class="font-medium text-sm tabular-nums">${fmtUSD(values[i])}</span>
+        </div>`).join('');
+    }
+
+    function renderCostTable(costs) {
+      const rows = [
+        { service: 'Cloud SQL', sub: 'PostgreSQL 16 · db-f1-micro', cost: costs.cloud_sql_usd, tier: 'Fixed', note: '~$10/mo always-on', color: '#8b5cf6' },
+        { service: 'Cloud Run', sub: 'FastAPI · scales to zero', cost: costs.cloud_run_usd, tier: 'Pay per use', note: 'Free ≤ 2M req/mo', color: '#3b82f6' },
+        { service: 'Cloud Storage', sub: 'Document uploads (GCS)', cost: costs.cloud_storage_usd, tier: 'Standard', note: '~$0.023/GB/mo', color: '#10b981' },
+      ];
+      document.getElementById('costTable').innerHTML = rows.map(r => `
+        <tr>
+          <td class="py-3">
+            <div class="flex items-center gap-2.5">
+              <div class="w-1.5 h-8 rounded-full shrink-0" style="background:${r.color}"></div>
+              <div>
+                <div class="text-gray-200 font-medium">${r.service}</div>
+                <div class="text-xs text-gray-500 mt-0.5">${r.sub}</div>
+              </div>
+            </div>
+          </td>
+          <td class="py-3 text-right font-semibold stat">${fmtUSD(r.cost)}</td>
+          <td class="py-3 text-right text-xs text-gray-500 hidden sm:table-cell">${r.tier}</td>
+          <td class="py-3 text-right text-xs text-gray-500 hidden md:table-cell">${r.note}</td>
+        </tr>`).join('');
+    }
+
+    function renderFreeTier(requests) {
+      const used = Math.max(0, 2_000_000 - requests.free_tier_remaining);
+      const pct = Math.min((used / 2_000_000) * 100, 100);
+      document.getElementById('freeTierText').textContent = `${fmt(used)} / 2,000,000`;
+      document.getElementById('freeTierBar').style.width = `${pct}%`;
+      const bar = document.getElementById('freeTierBar');
+      bar.style.background = pct > 80 ? '#ef4444' : pct > 50 ? '#f59e0b' : '#10b981';
+      const note = document.getElementById('freeTierNote');
+      if (pct < 5) {
+        note.textContent = `${fmt(requests.free_tier_remaining)} requests remaining in free tier this month`;
+        note.style.color = '#16a34a';
+      } else if (pct > 80) {
+        note.textContent = 'Approaching free tier limit — Cloud Run charges start after 2M requests';
+        note.style.color = '#dc2626';
+      } else {
+        note.textContent = '';
+      }
+    }
+
+    // ── ORCHESTRATION ─────────────────────────────────────
+    async function refresh(manual = false) {
+      const icon = document.getElementById('refreshIcon');
+      if (manual) icon.classList.add('animate-spin');
+      try {
+        const data = await fetchMetrics();
+        if (!data) return;
+        renderCards(data);
+        renderRequestChart(data.requests.daily);
+        renderCostDonut(data.cost_estimate);
+        renderCostTable(data.cost_estimate);
+        renderFreeTier(data.requests);
+      } catch (e) {
+        console.error('Refresh failed:', e);
+      } finally {
+        if (manual) setTimeout(() => icon.classList.remove('animate-spin'), 600);
+      }
+    }
+
+    function showDashboard() {
+      document.getElementById('loginScreen').classList.add('hidden');
+      document.getElementById('dashboard').classList.remove('hidden');
+      refresh();
+      autoRefreshTimer = setInterval(refresh, 60_000);
+    }
+
+    // ── BOOT ──────────────────────────────────────────────
+    window.addEventListener('load', () => {
+      if (token) showDashboard();
+      document.getElementById('password').addEventListener('keydown', e => {
+        if (e.key === 'Enter') login();
+      });
+    });
+  </script>
+</body>
+</html>

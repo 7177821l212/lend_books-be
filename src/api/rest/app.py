@@ -10,7 +10,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from src.api.middleware.logging import RequestLoggingMiddleware
 from src.api.middleware.rate_limit import limiter
 from src.api.middleware.request_id import RequestIDMiddleware
-from src.api.rest.routes import auth, collectors, customers, health, loans, payments, reports
+from src.api.rest.routes import admin, auth, collectors, customers, health, loans, payments, reports
 from src.config.settings import settings
 
 _LOG_CONFIG = {
@@ -64,6 +64,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(health.router)
+    app.include_router(admin.router)
     app.include_router(auth.router, prefix="/api/v1")
     app.include_router(customers.router, prefix="/api/v1")
     app.include_router(loans.router, prefix="/api/v1")

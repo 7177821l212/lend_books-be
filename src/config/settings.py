@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     GCS_BUCKET_NAME: str = ""
     GOOGLE_APPLICATION_CREDENTIALS: str = ""
+    GCP_PROJECT: str = "lendbook-prod"
 
 
 settings = Settings()
