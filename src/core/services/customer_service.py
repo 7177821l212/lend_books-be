@@ -184,6 +184,23 @@ class CustomerService:
             raise ConflictError("phone update collided with another customer") from exc
         return CustomerResponse.model_validate(customer)
 
+    async def delete(self, current_user: dict, customer_id: str) -> None:
+        self._require_investor(current_user)
+        customer = await self.customers.get_by_id(customer_id)
+        if customer is None:
+            raise NotFoundError("customer", customer_id)
+        from sqlalchemy import func
+        active_count = (await self.session.execute(
+            select(func.count(Loan.id)).where(
+                Loan.customer_id == customer_id,
+                Loan.status == LoanStatus.ACTIVE.value,
+            )
+        )).scalar_one()
+        if int(active_count) > 0:
+            raise ConflictError("close or reassign active loans before deleting this customer")
+        await self.session.delete(customer)
+        await self.session.flush()
+
     async def blacklist(
         self, current_user: dict, customer_id: str, reason: str
     ) -> CustomerResponse:

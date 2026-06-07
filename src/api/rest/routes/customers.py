@@ -58,6 +58,15 @@ async def update_customer(
     return await CustomerService(db).update(current_user, customer_id, body)
 
 
+@router.delete("/{customer_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_customer(
+    customer_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    await CustomerService(db).delete(current_user, customer_id)
+
+
 @router.post("/{customer_id}/blacklist", response_model=CustomerResponse)
 async def blacklist_customer(
     customer_id: str,

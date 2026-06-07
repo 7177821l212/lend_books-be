@@ -46,6 +46,15 @@ async def update_collector(
     return await CollectorService(db).update(current_user, collector_id, body)
 
 
+@router.patch("/{collector_id}/activate", response_model=CollectorResponse)
+async def activate_collector(
+    collector_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CollectorResponse:
+    return await CollectorService(db).activate(current_user, collector_id)
+
+
 @router.patch("/{collector_id}/deactivate", response_model=CollectorResponse)
 async def deactivate_collector(
     collector_id: str,
@@ -53,3 +62,12 @@ async def deactivate_collector(
     db: AsyncSession = Depends(get_db),
 ) -> CollectorResponse:
     return await CollectorService(db).deactivate(current_user, collector_id)
+
+
+@router.delete("/{collector_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_collector(
+    collector_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    await CollectorService(db).delete(current_user, collector_id)
