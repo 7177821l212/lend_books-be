@@ -1,6 +1,7 @@
 """Customer service — RBAC + computed loan summary."""
 
 import re
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -198,7 +199,8 @@ class CustomerService:
         )).scalar_one()
         if int(active_count) > 0:
             raise ConflictError("close or reassign active loans before deleting this customer")
-        await self.session.delete(customer)
+        customer.is_deleted = True
+        customer.deleted_at = datetime.now(timezone.utc)
         await self.session.flush()
 
     async def blacklist(
