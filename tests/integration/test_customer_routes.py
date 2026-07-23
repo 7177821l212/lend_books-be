@@ -287,3 +287,58 @@ class TestCustomerGet:
         headers = await _login_as(client, collector)
         res = await client.get(f"/api/v1/customers/{cust.id}", headers=headers)
         assert res.status_code == 403
+
+
+@pytest.mark.integration
+class TestCustomerDelete:
+    async def test_delete_with_closed_loan_soft_deletes(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Regression test: deleting a customer with a non-active (e.g. closed)
+        loan used to hard-delete the row and hit the loans.customer_id NOT NULL
+        constraint. Soft delete avoids touching the loans table entirely."""
+        investor = await _make_user(db_session, "inv-del1@x.com")
+        collector = await _make_user(db_session, "c-del1@x.com", role=UserRole.COLLECTOR)
+        cust = await _make_customer(db_session, "Closed Loan Customer", "9000000100")
+        loan = await _make_active_loan(db_session, cust.id, collector.id)
+        loan.status = LoanStatus.CLOSED.value
+        await db_session.flush()
+
+        headers = await _login_as(client, investor)
+        res = await client.delete(f"/api/v1/customers/{cust.id}", headers=headers)
+        assert res.status_code == 204
+
+        # Soft-deleted customer is no longer reachable via the API
+        res = await client.get(f"/api/v1/customers/{cust.id}", headers=headers)
+        assert res.status_code == 404
+
+        await db_session.refresh(cust)
+        assert cust.is_deleted is True
+        assert cust.deleted_at is not None
+
+    async def test_delete_blocked_with_active_loan(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        investor = await _make_user(db_session, "inv-del2@x.com")
+        collector = await _make_user(db_session, "c-del2@x.com", role=UserRole.COLLECTOR)
+        cust = await _make_customer(db_session, "Active Loan Customer", "9000000101")
+        await _make_active_loan(db_session, cust.id, collector.id)
+
+        headers = await _login_as(client, investor)
+        res = await client.delete(f"/api/v1/customers/{cust.id}", headers=headers)
+        assert res.status_code == 409
+
+    async def test_deleted_customer_excluded_from_list(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        investor = await _make_user(db_session, "inv-del3@x.com")
+        cust = await _make_customer(db_session, "Gone", "9000000102")
+
+        headers = await _login_as(client, investor)
+        res = await client.delete(f"/api/v1/customers/{cust.id}", headers=headers)
+        assert res.status_code == 204
+
+        res = await client.get("/api/v1/customers", headers=headers)
+        assert res.status_code == 200
+        ids = [c["id"] for c in res.json()["items"]]
+        assert cust.id not in ids
