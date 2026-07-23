@@ -1,4 +1,6 @@
-from sqlalchemy import Boolean, String
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.constants.enums import RiskLevel
@@ -16,6 +18,8 @@ class Customer(Base, TimestampMixin):
     is_blacklisted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     blacklist_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     photo_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     loans = relationship("Loan", back_populates="customer")
     documents = relationship(

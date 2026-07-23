@@ -14,7 +14,10 @@ class CustomerRepository:
         self.session = session
 
     async def get_by_id(self, customer_id: str) -> Customer | None:
-        return await self.session.get(Customer, customer_id)
+        result = await self.session.execute(
+            select(Customer).where(Customer.id == customer_id, Customer.is_deleted.is_(False))
+        )
+        return result.scalar_one_or_none()
 
     async def get_by_phone(self, phone: str) -> Customer | None:
         result = await self.session.execute(select(Customer).where(Customer.phone == phone))
@@ -72,7 +75,7 @@ class CustomerRepository:
             outstanding_expr,
         )
 
-        conds = []
+        conds = [Customer.is_deleted.is_(False)]
         if collector_id is not None:
             assigned_sq = (
                 select(Loan.customer_id)
