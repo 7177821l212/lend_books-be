@@ -126,7 +126,7 @@ class CollectorService:
         if int(active_count) > 0:
             from src.core.exceptions.base import ConflictError
             raise ConflictError("reassign or close active loans before deleting this collector")
-        await self.session.delete(user)
+        user.is_active = False
         await self.session.flush()
 
     async def deactivate(self, current_user: dict, collector_id: str) -> CollectorResponse:
