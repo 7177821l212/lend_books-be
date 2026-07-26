@@ -11,3 +11,4 @@ htmlcov/
 dist/
 *.egg-info/
 .DS_Store
+/uploads/

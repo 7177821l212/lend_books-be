@@ -1,12 +1,23 @@
 """Collector service — list and create collectors."""
 
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.constants.enums import UserRole
 from src.core.exceptions.base import ConflictError, ForbiddenError
+from src.data.models.postgres.collector_location import CollectorLocation
 from src.data.models.postgres.user import User
-from src.schemas.collector import CollectorCreate, CollectorResponse, CollectorUpdate
+from src.schemas.collector import (
+    CollectorCreate,
+    CollectorLocationResponse,
+    CollectorResponse,
+    CollectorUpdate,
+    LocationReport,
+)
 from src.utils.security import hash_password
 
 
@@ -145,3 +156,52 @@ class CollectorService:
         await self.session.flush()
         await self.session.refresh(user)
         return CollectorResponse.model_validate(user)
+
+    async def report_location(self, current_user: dict, body: LocationReport) -> None:
+        """Upsert the calling collector's live location (one row per collector)."""
+        if current_user.get("role") != UserRole.COLLECTOR.value:
+            raise ForbiddenError("only a collector can report their own location")
+        collector_id = current_user["sub"]
+
+        result = await self.session.execute(
+            select(CollectorLocation).where(CollectorLocation.collector_id == collector_id)
+        )
+        row = result.scalar()
+        recorded_at = body.recorded_at or datetime.now(timezone.utc)
+        if row is None:
+            row = CollectorLocation(
+                collector_id=collector_id,
+                latitude=body.latitude,
+                longitude=body.longitude,
+                accuracy=body.accuracy,
+                recorded_at=recorded_at,
+            )
+            self.session.add(row)
+        else:
+            row.latitude = body.latitude
+            row.longitude = body.longitude
+            row.accuracy = body.accuracy
+            row.recorded_at = recorded_at
+        await self.session.flush()
+
+    async def list_locations(self, current_user: dict) -> list[CollectorLocationResponse]:
+        """Investor-only — last-known location for every active collector that has reported one."""
+        self._require_investor(current_user)
+        result = await self.session.execute(
+            select(CollectorLocation, User)
+            .join(User, User.id == CollectorLocation.collector_id)
+            .where(User.role == UserRole.COLLECTOR.value, User.is_active.is_(True))
+            .order_by(CollectorLocation.recorded_at.desc())
+        )
+        return [
+            CollectorLocationResponse(
+                collector_id=user.id,
+                collector_name=user.name,
+                photo_url=user.photo_url,
+                latitude=loc.latitude,
+                longitude=loc.longitude,
+                accuracy=loc.accuracy,
+                recorded_at=loc.recorded_at,
+            )
+            for loc, user in result.all()
+        ]

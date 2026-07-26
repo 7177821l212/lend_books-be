@@ -12,6 +12,7 @@ class CustomerCreate(BaseModel):
     phone: str = Field(min_length=10, max_length=20)
     location: str | None = Field(default=None, max_length=255)
     risk_level: RiskLevel = RiskLevel.MEDIUM
+    photo_url: str | None = Field(default=None, max_length=1024)
 
 
 class CustomerUpdate(BaseModel):

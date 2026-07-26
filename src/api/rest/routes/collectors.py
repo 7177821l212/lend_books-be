@@ -5,7 +5,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.dependencies import get_current_user, get_db
 from src.core.services.collector_service import CollectorService
-from src.schemas.collector import CollectorCreate, CollectorResponse, CollectorUpdate
+from src.schemas.collector import (
+    CollectorCreate,
+    CollectorLocationResponse,
+    CollectorResponse,
+    CollectorUpdate,
+    LocationReport,
+)
 
 router = APIRouter(prefix="/collectors", tags=["collectors"])
 
@@ -25,6 +31,25 @@ async def create_collector(
     db: AsyncSession = Depends(get_db),
 ) -> CollectorResponse:
     return await CollectorService(db).create(current_user, body)
+
+
+@router.post("/me/location", status_code=status.HTTP_204_NO_CONTENT)
+async def report_my_location(
+    body: LocationReport,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Collector reports their own current location — sent periodically while the app is open."""
+    await CollectorService(db).report_location(current_user, body)
+
+
+@router.get("/locations", response_model=list[CollectorLocationResponse])
+async def list_collector_locations(
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[CollectorLocationResponse]:
+    """Investor-only — last-known location for every active collector."""
+    return await CollectorService(db).list_locations(current_user)
 
 
 @router.get("/{collector_id}", response_model=CollectorResponse)

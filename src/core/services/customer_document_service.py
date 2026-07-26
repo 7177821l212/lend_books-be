@@ -1,15 +1,15 @@
-"""Customer document service — list + upload to GCS."""
+"""Customer document service — list + upload via the unified storage layer."""
+
+import mimetypes
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.config.settings import settings
 from src.constants.enums import UserRole
-from src.core.exceptions.base import ForbiddenError, NotFoundError
-from src.data.models.postgres.customer import Customer
+from src.core.exceptions.base import ForbiddenError
 from src.data.models.postgres.customer_document import CustomerDocument
-from src.schemas.customer import DocumentResponse, DocumentUploadRequest
-from src.utils.gcs import GCSClient, get_gcs_path
+from src.schemas.customer import DocumentResponse
+from src.utils import gcs
 
 
 class CustomerDocumentService:
@@ -32,18 +32,14 @@ class CustomerDocumentService:
             raise ForbiddenError("only investor can upload customer documents")
         await self._must_view(current_user, customer_id)
 
-        if not settings.GCS_BUCKET_NAME:
-            raise ForbiddenError("document upload is not configured")
-
-        gcs = GCSClient(settings.GCS_BUCKET_NAME)
-        blob_path = get_gcs_path(customer_id, doc_type.strip(), filename)
-        gcs.upload_from_string(blob_path, file_content, content_type="application/octet-stream")
-        file_url = f"gs://{settings.GCS_BUCKET_NAME}/{blob_path}"
+        object_name = gcs.get_gcs_path(customer_id, doc_type.strip(), filename)
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        gcs.save_bytes(file_content, content_type, object_name)
 
         doc = CustomerDocument(
             customer_id=customer_id,
             doc_type=doc_type.strip(),
-            file_url=file_url,
+            file_url=object_name,
             uploaded_by=current_user["sub"],
         )
         self.session.add(doc)
