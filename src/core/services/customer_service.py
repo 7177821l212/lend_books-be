@@ -146,6 +146,7 @@ class CustomerService:
             location=body.location.strip() if body.location else None,
             risk_level=body.risk_level.value,
             is_blacklisted=False,
+            photo_url=body.photo_url,
         )
         try:
             await self.customers.create(customer)
@@ -178,6 +179,8 @@ class CustomerService:
             customer.location = body.location.strip()
         if body.risk_level is not None:
             customer.risk_level = body.risk_level.value
+        if body.photo_url is not None:
+            customer.photo_url = body.photo_url
         try:
             await self.session.flush()
         except IntegrityError as exc:
