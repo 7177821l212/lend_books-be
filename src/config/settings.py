@@ -23,5 +23,13 @@ class Settings(BaseSettings):
     GCS_BUCKET_NAME: str = ""
     GOOGLE_APPLICATION_CREDENTIALS: str = ""
 
+    # Local-filesystem storage fallback — used automatically when GCS credentials
+    # are unavailable (e.g. local Docker dev). Files are written under
+    # LOCAL_UPLOAD_DIR and served publicly from `{PUBLIC_BASE_URL}/files/...`.
+    # Relative default so it works both on the host (pytest) and in-container;
+    # docker-compose overrides it to an absolute, volume-backed path.
+    LOCAL_UPLOAD_DIR: str = "./uploads"
+    PUBLIC_BASE_URL: str = "http://localhost:8000"
+
 
 settings = Settings()

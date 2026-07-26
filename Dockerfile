@@ -11,7 +11,7 @@ FROM base AS production
 
 COPY src/ ./src/
 
-RUN chown -R appuser:appgroup /app
+RUN mkdir -p /app/uploads && chown -R appuser:appgroup /app
 USER appuser
 
 ENV PORT=8080
