@@ -10,10 +10,13 @@ RUN pip install uv && uv pip install --system -e .
 FROM base AS production
 
 COPY src/ ./src/
+COPY src/data/migrations/ ./src/data/migrations/
+COPY alembic.ini .
+COPY entrypoint.sh .
 
-RUN mkdir -p /app/uploads && chown -R appuser:appgroup /app
+RUN mkdir -p /app/uploads && chmod +x entrypoint.sh && chown -R appuser:appgroup /app
 USER appuser
 
 ENV PORT=8080
 EXPOSE 8080
-CMD ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8080"]
+ENTRYPOINT ["./entrypoint.sh"]
