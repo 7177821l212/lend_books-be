@@ -1,12 +1,13 @@
 """Customer document service — list + upload via the unified storage layer."""
 
 import mimetypes
+import re
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.constants.enums import UserRole
-from src.core.exceptions.base import ForbiddenError
+from src.core.exceptions.base import ForbiddenError, ValidationError
 from src.data.models.postgres.customer_document import CustomerDocument
 from src.schemas.customer import DocumentResponse
 from src.utils import gcs
@@ -16,7 +17,9 @@ class CustomerDocumentService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def list(self, current_user: dict, customer_id: str) -> list[DocumentResponse]:
+    async def list(
+        self, current_user: dict, customer_id: str
+    ) -> list[DocumentResponse]:
         await self._must_view(current_user, customer_id)
         result = await self.session.execute(
             select(CustomerDocument)
@@ -26,19 +29,31 @@ class CustomerDocumentService:
         return [DocumentResponse.model_validate(d) for d in result.scalars()]
 
     async def create(
-        self, current_user: dict, customer_id: str, doc_type: str, file_content: bytes, filename: str
+        self,
+        current_user: dict,
+        customer_id: str,
+        doc_type: str,
+        file_content: bytes,
+        filename: str,
     ) -> DocumentResponse:
         if current_user.get("role") != UserRole.INVESTOR.value:
             raise ForbiddenError("only investor can upload customer documents")
         await self._must_view(current_user, customer_id)
 
-        object_name = gcs.get_gcs_path(customer_id, doc_type.strip(), filename)
+        normalized_doc_type = doc_type.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,50}", normalized_doc_type):
+            raise ValidationError(
+                "document type may contain only letters, numbers, hyphens, and "
+                "underscores"
+            )
+
+        object_name = gcs.get_gcs_path(customer_id, normalized_doc_type, filename)
         content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         gcs.save_bytes(file_content, content_type, object_name)
 
         doc = CustomerDocument(
             customer_id=customer_id,
-            doc_type=doc_type.strip(),
+            doc_type=normalized_doc_type,
             file_url=object_name,
             uploaded_by=current_user["sub"],
         )

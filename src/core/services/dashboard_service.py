@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import timedelta
 
 from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.constants.enums import InterestType, LendingModel, LoanStatus, UserRole
+from src.constants.enums import LoanStatus, UserRole
 from src.core.exceptions.base import ForbiddenError
 from src.data.models.postgres.customer import Customer
 from src.data.models.postgres.installment import Installment
@@ -20,6 +20,7 @@ from src.schemas.dashboard import (
     DashboardResponse,
     TrendPoint,
 )
+from src.utils.time import business_today, utc_day_bounds
 
 
 class DashboardService:
@@ -42,7 +43,8 @@ class DashboardService:
     # ----- KPIs -----
 
     async def _kpis(self) -> DashboardKPIs:
-        today = datetime.now(timezone.utc).date()
+        today = business_today()
+        day_start, day_end = utc_day_bounds(today)
 
         # Capital disbursed = sum of all loan.disbursed (closed + active)
         capital_disbursed = (
@@ -61,7 +63,8 @@ class DashboardService:
             await self.session.execute(
                 select(func.coalesce(func.sum(Payment.amount), 0)).where(
                     Payment.is_missed.is_(False),
-                    func.date(Payment.collected_at) == today,
+                    Payment.collected_at >= day_start,
+                    Payment.collected_at < day_end,
                 )
             )
         ).scalar_one()
@@ -154,20 +157,25 @@ class DashboardService:
     # ----- Trend -----
 
     async def _trend_last_30_days(self) -> list[TrendPoint]:
-        today = datetime.now(timezone.utc).date()
+        today = business_today()
         thirty_days_ago = today - timedelta(days=29)
+        period_start, period_end = utc_day_bounds(thirty_days_ago)
+        _, today_end = utc_day_bounds(today)
+        business_day = func.date(
+            func.timezone("Asia/Kolkata", Payment.collected_at)
+        )
 
         result = await self.session.execute(
             select(
-                func.date(Payment.collected_at).label("day"),
+                business_day.label("day"),
                 func.coalesce(func.sum(Payment.amount), 0).label("amount"),
             )
             .where(
                 Payment.is_missed.is_(False),
-                func.date(Payment.collected_at) >= thirty_days_ago,
-                func.date(Payment.collected_at) <= today,
+                Payment.collected_at >= period_start,
+                Payment.collected_at < today_end,
             )
-            .group_by(func.date(Payment.collected_at))
+            .group_by(business_day)
         )
         by_day = {row.day: int(row.amount or 0) for row in result.all()}
 

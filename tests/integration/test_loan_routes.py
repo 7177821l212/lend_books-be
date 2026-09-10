@@ -172,6 +172,23 @@ class TestCreateLoan:
         )
         assert res.status_code == 409
 
+    async def test_soft_deleted_customer_cannot_receive_a_new_loan(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        investor = await _make_user(db_session, "inv-deleted@x.com")
+        collector = await _make_user(
+            db_session, "col-deleted@x.com", role=UserRole.COLLECTOR
+        )
+        customer = await _make_customer(db_session, phone="9999900106")
+        customer.is_deleted = True
+        await db_session.flush()
+        headers = await _login(client, investor)
+
+        res = await client.post(
+            "/api/v1/loans", headers=headers, json=_payload(customer.id, collector.id)
+        )
+        assert res.status_code == 404
+
     async def test_pct_above_100_rejected(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:

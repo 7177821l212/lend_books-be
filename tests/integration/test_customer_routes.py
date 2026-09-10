@@ -44,7 +44,13 @@ async def _make_customer(
     phone: str = "9999900001",
     blacklisted: bool = False,
 ) -> Customer:
-    c = Customer(name=name, phone=phone, location="Coimbatore", risk_level="medium", is_blacklisted=blacklisted)
+    c = Customer(
+        name=name,
+        phone=phone,
+        location="Coimbatore",
+        risk_level="medium",
+        is_blacklisted=blacklisted,
+    )
     db.add(c)
     await db.flush()
     await db.refresh(c)
@@ -76,7 +82,9 @@ async def _make_active_loan(
     return loan
 
 
-async def _login_as(client: AsyncClient, user: User, password: str = "pw12345") -> dict[str, str]:
+async def _login_as(
+    client: AsyncClient, user: User, password: str = "pw12345"
+) -> dict[str, str]:
     res = await client.post(
         "/api/v1/auth/login", json={"email": user.email, "password": password}
     )
@@ -147,7 +155,9 @@ class TestCustomerList:
         assert body["items"][0]["name"] == "Banned 1"
         assert body["items"][0]["is_blacklisted"] is True
 
-    async def test_pagination(self, client: AsyncClient, db_session: AsyncSession) -> None:
+    async def test_pagination(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
         investor = await _make_user(db_session, "inv4@x.com")
         for i in range(5):
             await _make_customer(db_session, f"Cust {i}", f"900000004{i}")
@@ -175,7 +185,12 @@ class TestCustomerCreate:
         res = await client.post(
             "/api/v1/customers",
             headers=headers,
-            json={"name": "New Customer", "phone": "9000000050", "location": "Salem", "risk_level": "low"},
+            json={
+                "name": "New Customer",
+                "phone": "9000000050",
+                "location": "Salem",
+                "risk_level": "low",
+            },
         )
         assert res.status_code == 201
         body = res.json()
@@ -282,7 +297,9 @@ class TestCustomerGet:
     async def test_collector_cannot_view_unassigned_customer(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
-        collector = await _make_user(db_session, "c-get1@x.com", role=UserRole.COLLECTOR)
+        collector = await _make_user(
+            db_session, "c-get1@x.com", role=UserRole.COLLECTOR
+        )
         cust = await _make_customer(db_session, "Stranger", "9000000090")
         headers = await _login_as(client, collector)
         res = await client.get(f"/api/v1/customers/{cust.id}", headers=headers)
@@ -298,7 +315,9 @@ class TestCustomerDelete:
         loan used to hard-delete the row and hit the loans.customer_id NOT NULL
         constraint. Soft delete avoids touching the loans table entirely."""
         investor = await _make_user(db_session, "inv-del1@x.com")
-        collector = await _make_user(db_session, "c-del1@x.com", role=UserRole.COLLECTOR)
+        collector = await _make_user(
+            db_session, "c-del1@x.com", role=UserRole.COLLECTOR
+        )
         cust = await _make_customer(db_session, "Closed Loan Customer", "9000000100")
         loan = await _make_active_loan(db_session, cust.id, collector.id)
         loan.status = LoanStatus.CLOSED.value
@@ -320,7 +339,9 @@ class TestCustomerDelete:
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
         investor = await _make_user(db_session, "inv-del2@x.com")
-        collector = await _make_user(db_session, "c-del2@x.com", role=UserRole.COLLECTOR)
+        collector = await _make_user(
+            db_session, "c-del2@x.com", role=UserRole.COLLECTOR
+        )
         cust = await _make_customer(db_session, "Active Loan Customer", "9000000101")
         await _make_active_loan(db_session, cust.id, collector.id)
 
@@ -342,3 +363,61 @@ class TestCustomerDelete:
         assert res.status_code == 200
         ids = [c["id"] for c in res.json()["items"]]
         assert cust.id not in ids
+
+
+@pytest.mark.integration
+class TestCustomerDocuments:
+    async def test_investor_uploads_document_to_storage_and_it_is_listed(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        investor = await _make_user(db_session, "inv-doc@x.com")
+        customer = await _make_customer(db_session, "Document customer", "9000000103")
+        headers = await _login_as(client, investor)
+        saved: dict[str, object] = {}
+
+        def save_bytes(content: bytes, content_type: str, object_name: str) -> str:
+            saved.update(
+                content=content, content_type=content_type, object_name=object_name
+            )
+            return object_name
+
+        monkeypatch.setattr(
+            "src.core.services.customer_document_service.gcs.save_bytes", save_bytes
+        )
+        response = await client.post(
+            f"/api/v1/customers/{customer.id}/documents",
+            headers=headers,
+            data={"doc_type": "id_proof"},
+            files={"file": ("identity.pdf", b"%PDF-1.7 test", "application/pdf")},
+        )
+
+        assert response.status_code == 201
+        body = response.json()
+        assert body["doc_type"] == "id_proof"
+        assert body["file_url"].startswith(f"documents/{customer.id}/id_proof/")
+        assert saved["content"] == b"%PDF-1.7 test"
+        assert saved["content_type"] == "application/pdf"
+
+        listed = await client.get(
+            f"/api/v1/customers/{customer.id}/documents", headers=headers
+        )
+        assert listed.status_code == 200
+        assert [document["id"] for document in listed.json()] == [body["id"]]
+
+    async def test_document_type_cannot_escape_its_storage_prefix(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        investor = await _make_user(db_session, "inv-doc-invalid@x.com")
+        customer = await _make_customer(db_session, "Invalid document", "9000000104")
+        headers = await _login_as(client, investor)
+
+        response = await client.post(
+            f"/api/v1/customers/{customer.id}/documents",
+            headers=headers,
+            data={"doc_type": "../../photos"},
+            files={"file": ("identity.pdf", b"%PDF-1.7 test", "application/pdf")},
+        )
+        assert response.status_code == 422

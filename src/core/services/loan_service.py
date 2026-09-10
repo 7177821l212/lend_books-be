@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,7 +48,7 @@ class LoanService:
         self._require_investor(current_user)
 
         customer = await self.session.get(Customer, body.customer_id)
-        if customer is None:
+        if customer is None or customer.is_deleted:
             raise NotFoundError("customer", body.customer_id)
         if customer.is_blacklisted:
             raise ConflictError("blacklisted customers cannot receive new loans")
@@ -122,8 +122,10 @@ class LoanService:
     ) -> PaginatedResponse[LoanSummary]:
         offset = (page - 1) * page_size
 
-        base = select(Loan).join(Customer, Customer.id == Loan.customer_id).join(
-            User, User.id == Loan.collector_id
+        base = (
+            select(Loan)
+            .join(Customer, Customer.id == Loan.customer_id)
+            .join(User, User.id == Loan.collector_id)
         )
 
         conds = []
@@ -172,8 +174,10 @@ class LoanService:
         if loan.status == LoanStatus.CLOSED.value:
             raise ConflictError("loan already closed")
         loan.status = LoanStatus.CLOSED.value
-        loan.closed_at = datetime.now(timezone.utc)
-        loan.close_reason = body.reason.strip() if body and body.reason else "Closed early"
+        loan.closed_at = datetime.now(UTC)
+        loan.close_reason = (
+            body.reason.strip() if body and body.reason else "Closed early"
+        )
         await self.session.flush()
         loan = await self._fetch_loan(loan.id)
         return await self._to_detail(loan)
@@ -293,4 +297,9 @@ class LoanService:
         # Outstanding = repayable - repaid (from loan)
         loan = await self.session.get(Loan, loan_id)
         outstanding = max(0, (loan.repayable if loan else 0) - repaid)
-        return outstanding, repaid, int(row.paid_count or 0), int(row.overdue_count or 0)
+        return (
+            outstanding,
+            repaid,
+            int(row.paid_count or 0),
+            int(row.overdue_count or 0),
+        )

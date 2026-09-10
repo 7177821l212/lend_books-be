@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from src.api.rest.app import create_app
 from src.api.rest.dependencies import get_db
+from src.api.middleware.rate_limit import limiter
 from src.data.models.postgres import Base  # noqa — imports all models
 
 TEST_DATABASE_URL = "postgresql+asyncpg://lendbook:lendbook@localhost:5435/lendbook_test"
@@ -16,7 +17,7 @@ engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
 TestSession = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
-@pytest_asyncio.fixture(scope="session", autouse=True, loop_scope="session")
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def setup_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
@@ -28,7 +29,7 @@ async def setup_db():
 
 
 @pytest.fixture
-async def db_session():
+async def db_session(setup_db):
     """Truncate tables, then yield a session that commits at the end."""
     async with engine.begin() as conn:
         for table in reversed(Base.metadata.sorted_tables):
@@ -40,6 +41,7 @@ async def db_session():
 
 @pytest.fixture
 async def client(db_session: AsyncSession):
+    limiter.reset()
     app = create_app()
 
     async def override_get_db():
