@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,10 +18,11 @@ from src.schemas.dashboard import (
     OverdueLoanRow,
     ReportsResponse,
 )
+from src.utils.time import business_today
 
 
 def _period_start(period: str | None) -> date | None:
-    today = datetime.now(tz=timezone.utc).date()
+    today = business_today()
     if period == "week":
         return today - timedelta(days=7)
     if period == "month":

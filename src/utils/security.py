@@ -1,6 +1,7 @@
 """Security utilities — password hashing + JWT issue/verify."""
 
-from datetime import datetime, timedelta, timezone
+import hashlib
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import bcrypt
@@ -21,7 +22,7 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    """Verify plaintext against bcrypt hash. False on any error (including bad hash format)."""
+    """Verify plaintext against bcrypt hash; return False for invalid hashes."""
     try:
         pw_bytes = plain.encode("utf-8")
         if len(pw_bytes) > _MAX_PASSWORD_BYTES:
@@ -32,29 +33,46 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def create_access_token(subject: str, role: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(
+    expire = datetime.now(UTC) + timedelta(
         minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES
     )
     return jwt.encode(
-        {"sub": subject, "role": role, "exp": expire, "type": "access", "jti": str(uuid4())},
+        {
+            "sub": subject,
+            "role": role,
+            "exp": expire,
+            "type": "access",
+            "jti": str(uuid4()),
+        },
         settings.JWT_SECRET_KEY,
         algorithm=settings.JWT_ALGORITHM,
     )
 
 
-def create_refresh_token(subject: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(
-        days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS
-    )
+def refresh_session_marker(hashed_password: str) -> str:
+    """Return a stable, non-reversible marker for the current password hash."""
+    return hashlib.sha256(hashed_password.encode("utf-8")).hexdigest()
+
+
+def create_refresh_token(subject: str, session_marker: str | None = None) -> str:
+    expire = datetime.now(UTC) + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS)
+    claims = {
+        "sub": subject,
+        "exp": expire,
+        "type": "refresh",
+        "jti": str(uuid4()),
+    }
+    if session_marker is not None:
+        claims["session"] = session_marker
     return jwt.encode(
-        {"sub": subject, "exp": expire, "type": "refresh", "jti": str(uuid4())},
+        claims,
         settings.JWT_SECRET_KEY,
         algorithm=settings.JWT_ALGORITHM,
     )
 
 
 def decode_token(token: str) -> dict:
-    """Decode + validate a JWT. Raises ValueError on any failure (expired, bad signature, malformed)."""
+    """Decode and validate a JWT, raising ValueError for any invalid token."""
     try:
         return jwt.decode(
             token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]

@@ -107,14 +107,28 @@ class TestMeRoute:
 
     async def test_me_without_token_returns_401(self, client: AsyncClient) -> None:
         res = await client.get("/api/v1/auth/me")
-        # FastAPI returns 422 when Header(...) is missing; we accept either auth-failure code
-        assert res.status_code in (401, 422)
+        assert res.status_code == 401
 
     async def test_me_with_bad_token_returns_401(self, client: AsyncClient) -> None:
         res = await client.get(
             "/api/v1/auth/me", headers={"Authorization": "Bearer not.a.jwt"}
         )
         assert res.status_code == 401
+
+    async def test_signed_url_requires_a_persisted_visible_object(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        user = await _make_user(db_session, email="file@example.com", password="pw12345")
+        login = await client.post(
+            "/api/v1/auth/login",
+            json={"email": user.email, "password": "pw12345"},
+        )
+        res = await client.get(
+            "/api/v1/upload/signed-url",
+            headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+            params={"object_name": "photos/not-attached-to-a-record.jpg"},
+        )
+        assert res.status_code == 403
 
 
 @pytest.mark.integration
@@ -175,3 +189,26 @@ class TestRefreshRoute:
         )
         assert replay.status_code == 401
         assert "revoked" in replay.json()["detail"].lower()
+
+    async def test_password_change_invalidates_existing_refresh_tokens(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        await _make_user(db_session, email="change@example.com", password="old-password")
+        login = await client.post(
+            "/api/v1/auth/login",
+            json={"email": "change@example.com", "password": "old-password"},
+        )
+        body = login.json()
+
+        changed = await client.post(
+            "/api/v1/auth/change-password",
+            headers={"Authorization": f"Bearer {body['access_token']}"},
+            json={"current_password": "old-password", "new_password": "new-password"},
+        )
+        assert changed.status_code == 204
+
+        refreshed = await client.post(
+            "/api/v1/auth/refresh",
+            json={"refresh_token": body["refresh_token"]},
+        )
+        assert refreshed.status_code == 401

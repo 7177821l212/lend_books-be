@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import calendar
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.constants.enums import (
     InstallmentStatus,
     LoanStatus,
-    PaymentMode,
     RepaymentFrequency,
     UserRole,
 )
@@ -33,6 +32,7 @@ from src.schemas.payment import (
     PaymentResponse,
     PickupItem,
 )
+from src.utils.time import business_today, utc_day_bounds
 
 
 class PaymentService:
@@ -51,10 +51,16 @@ class PaymentService:
     # Collect
     # ------------------------------------------------------------------
 
-    async def collect(self, current_user: dict, body: CollectRequest) -> PaymentResponse:
+    async def collect(
+        self, current_user: dict, body: CollectRequest
+    ) -> PaymentResponse:
         loan = await self._get_loan_with_rbac(current_user, body.loan_id)
         if loan.status != LoanStatus.ACTIVE.value:
             raise ConflictError(f"loan is {loan.status}; cannot collect")
+
+        remaining_balance = await self._remaining_collectible_balance(loan.id)
+        if body.amount > remaining_balance:
+            raise ConflictError("payment exceeds the remaining loan balance")
 
         installment = await self._pick_installment(loan, body.schedule_id)
         outstanding_on_inst = installment.due_amount - installment.paid_amount
@@ -96,7 +102,9 @@ class PaymentService:
     # Mark missed
     # ------------------------------------------------------------------
 
-    async def mark_missed(self, current_user: dict, body: MissedRequest) -> PaymentResponse:
+    async def mark_missed(
+        self, current_user: dict, body: MissedRequest
+    ) -> PaymentResponse:
         loan = await self._get_loan_with_rbac(current_user, body.loan_id)
         if loan.status != LoanStatus.ACTIVE.value:
             raise ConflictError(f"loan is {loan.status}; cannot mark missed")
@@ -104,8 +112,13 @@ class PaymentService:
         installment = await self.session.get(Installment, body.schedule_id)
         if installment is None or installment.loan_id != loan.id:
             raise NotFoundError("installment", body.schedule_id)
-        if installment.status == InstallmentStatus.PAID.value:
-            raise ConflictError("installment is already paid")
+        if installment.status not in {
+            InstallmentStatus.PENDING.value,
+            InstallmentStatus.PARTIAL.value,
+            InstallmentStatus.DUE_TODAY.value,
+            InstallmentStatus.OVERDUE.value,
+        }:
+            raise ConflictError("installment cannot be marked missed")
         installment.status = InstallmentStatus.MISSED.value
 
         # Extend the loan schedule by adding one installment at the end
@@ -153,7 +166,9 @@ class PaymentService:
             base = base.where(and_(*conds))
 
         total = (
-            await self.session.execute(select(func.count()).select_from(base.subquery()))
+            await self.session.execute(
+                select(func.count()).select_from(base.subquery())
+            )
         ).scalar_one()
         result = await self.session.execute(
             base.order_by(Payment.collected_at.desc()).offset(offset).limit(page_size)
@@ -172,10 +187,12 @@ class PaymentService:
     # My Day — pickups for the calling collector
     # ------------------------------------------------------------------
 
-    async def my_day(self, current_user: dict, today: date | None = None) -> MyDayResponse:
+    async def my_day(
+        self, current_user: dict, today: date | None = None
+    ) -> MyDayResponse:
         if current_user.get("role") != UserRole.COLLECTOR.value:
             raise ForbiddenError("only collectors have a 'My Day' view")
-        today = today or datetime.now(timezone.utc).date()
+        today = today or business_today()
 
         # Find pickups: installments where the loan is assigned to this collector
         # and the row is pending/partial/overdue and due_date <= today.
@@ -220,11 +237,13 @@ class PaymentService:
         target_total = sum(p.due_amount for p in pickups)
         overdue_count = sum(1 for p in pickups if p.is_overdue)
 
+        day_start, day_end = utc_day_bounds(today)
         collected_today_row = await self.session.execute(
             select(func.coalesce(func.sum(Payment.amount), 0)).where(
                 Payment.collector_id == current_user["sub"],
                 Payment.is_missed.is_(False),
-                func.date(Payment.collected_at) == today,
+                Payment.collected_at >= day_start,
+                Payment.collected_at < day_end,
             )
         )
         collected_today = int(collected_today_row.scalar_one() or 0)
@@ -243,7 +262,10 @@ class PaymentService:
     # ------------------------------------------------------------------
 
     async def _get_loan_with_rbac(self, current_user: dict, loan_id: str) -> Loan:
-        loan = await self.session.get(Loan, loan_id)
+        result = await self.session.execute(
+            select(Loan).where(Loan.id == loan_id).with_for_update()
+        )
+        loan = result.scalar_one_or_none()
         if loan is None:
             raise NotFoundError("loan", loan_id)
         role = current_user.get("role")
@@ -251,9 +273,31 @@ class PaymentService:
             # Investors aren't expected to record collections, but if they do,
             # they can act on any loan
             return loan
-        if role == UserRole.COLLECTOR.value and loan.collector_id == current_user["sub"]:
+        if (
+            role == UserRole.COLLECTOR.value
+            and loan.collector_id == current_user["sub"]
+        ):
             return loan
         raise ForbiddenError("loan not assigned to you")
+
+    async def _remaining_collectible_balance(self, loan_id: str) -> int:
+        open_statuses = [
+            InstallmentStatus.PENDING.value,
+            InstallmentStatus.PARTIAL.value,
+            InstallmentStatus.DUE_TODAY.value,
+            InstallmentStatus.OVERDUE.value,
+        ]
+        result = await self.session.execute(
+            select(
+                func.coalesce(
+                    func.sum(Installment.due_amount - Installment.paid_amount), 0
+                )
+            ).where(
+                Installment.loan_id == loan_id,
+                Installment.status.in_(open_statuses),
+            )
+        )
+        return int(result.scalar_one() or 0)
 
     async def _pick_installment(
         self, loan: Loan, schedule_id: str | None
@@ -299,7 +343,7 @@ class PaymentService:
         unpaid = int(result.scalar_one() or 0)
         if unpaid == 0:
             loan.status = LoanStatus.CLOSED.value
-            loan.closed_at = datetime.now(timezone.utc)
+            loan.closed_at = datetime.now(UTC)
             loan.close_reason = "Fully collected"
             await self.session.flush()
 
@@ -314,7 +358,9 @@ class PaymentService:
         last = result.scalar_one_or_none()
         if last is None:
             return
-        next_date = _next_installment_date(last.due_date, loan.repayment_frequency, loan.frequency_meta)
+        next_date = _next_installment_date(
+            last.due_date, loan.repayment_frequency, loan.frequency_meta
+        )
         new_inst = Installment(
             loan_id=loan.id,
             sequence=last.sequence + 1,
@@ -365,9 +411,7 @@ class PaymentService:
             await self.session.flush()
 
 
-def _next_installment_date(
-    last_date: date, frequency: str, meta: dict | None
-) -> date:
+def _next_installment_date(last_date: date, frequency: str, meta: dict | None) -> date:
     """Compute the due_date one period after `last_date` for the given frequency."""
     try:
         freq = RepaymentFrequency(frequency)
@@ -384,9 +428,8 @@ def _next_installment_date(
         return _add_months(last_date, 6)
     if freq == RepaymentFrequency.YEARLY:
         return _add_months(last_date, 12)
-    if freq == RepaymentFrequency.CUSTOM:
-        if meta and "interval_days" in meta:
-            return last_date + timedelta(days=int(meta["interval_days"]))
+    if freq == RepaymentFrequency.CUSTOM and meta and "interval_days" in meta:
+        return last_date + timedelta(days=int(meta["interval_days"]))
     return last_date + timedelta(days=1)
 
 

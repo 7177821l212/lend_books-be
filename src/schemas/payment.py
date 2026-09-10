@@ -2,7 +2,7 @@
 
 from datetime import date, datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.constants.enums import PaymentMode
 
@@ -14,6 +14,17 @@ class CollectRequest(BaseModel):
     schedule_id: str | None = None
     notes: str | None = Field(default=None, max_length=500)
     proof_photo_url: str | None = Field(default=None, max_length=500)
+
+    @field_validator("proof_photo_url")
+    @classmethod
+    def proof_must_reference_an_uploaded_photo(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.startswith("photos/") or any(
+            part in {"", ".", ".."} for part in value.split("/")
+        ):
+            raise ValueError("proof_photo_url must reference an uploaded photo")
+        return value
 
 
 class MissedRequest(BaseModel):
