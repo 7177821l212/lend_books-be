@@ -1,5 +1,7 @@
 """Authentication service — login, refresh (with revocation), get_me."""
 
+import secrets
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.exceptions.base import UnauthorizedError
@@ -11,6 +13,7 @@ from src.utils.security import (
     create_refresh_token,
     decode_token,
     hash_password,
+    refresh_session_marker,
     verify_password,
 )
 
@@ -28,7 +31,10 @@ class AuthService:
             raise UnauthorizedError("invalid credentials")
 
         access = create_access_token(subject=user.id, role=user.role)
-        refresh = create_refresh_token(subject=user.id)
+        refresh = create_refresh_token(
+            subject=user.id,
+            session_marker=refresh_session_marker(user.hashed_password),
+        )
         return TokenResponse(access_token=access, refresh_token=refresh)
 
     async def refresh(self, refresh_token: str) -> TokenResponse:
@@ -51,12 +57,20 @@ class AuthService:
         user = await self.users.get_by_id(user_id)
         if user is None or not user.is_active:
             raise UnauthorizedError("user not found")
+        if not secrets.compare_digest(
+            str(payload.get("session", "")),
+            refresh_session_marker(user.hashed_password),
+        ):
+            raise UnauthorizedError("refresh token has been invalidated")
 
         # Rotate: revoke the incoming refresh token, then issue a new pair
         await self.revoked.revoke(jti=jti, user_id=user.id)
 
         access = create_access_token(subject=user.id, role=user.role)
-        rotated = create_refresh_token(subject=user.id)
+        rotated = create_refresh_token(
+            subject=user.id,
+            session_marker=refresh_session_marker(user.hashed_password),
+        )
         return TokenResponse(access_token=access, refresh_token=rotated)
 
     async def get_me(self, user_id: str) -> UserMe:

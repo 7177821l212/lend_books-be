@@ -1,6 +1,6 @@
 """Customer API routes."""
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.dependencies import get_current_user, get_db
@@ -16,6 +16,7 @@ from src.schemas.customer import (
 )
 
 router = APIRouter(prefix="/customers", tags=["customers"])
+MAX_DOCUMENT_SIZE = 10 * 1024 * 1024
 
 
 @router.get("", response_model=PaginatedResponse[CustomerResponse])
@@ -108,6 +109,8 @@ async def upload_document(
     db: AsyncSession = Depends(get_db),
 ) -> DocumentResponse:
     content = await file.read()
+    if len(content) > MAX_DOCUMENT_SIZE:
+        raise HTTPException(status_code=400, detail="Document must be under 10 MB")
     return await CustomerDocumentService(db).create(
         current_user, customer_id, doc_type, content, file.filename or "document"
     )

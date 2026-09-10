@@ -13,8 +13,8 @@ async def get_db() -> AsyncSession:
             yield session
 
 
-async def get_current_user(authorization: str = Header(...)) -> dict:
-    if not authorization.startswith("Bearer "):
+async def get_current_user(authorization: str | None = Header(default=None)) -> dict:
+    if not authorization or not authorization.startswith("Bearer "):
         raise UnauthorizedError()
     token = authorization.removeprefix("Bearer ")
     try:

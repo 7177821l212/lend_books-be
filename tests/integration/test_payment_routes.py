@@ -46,14 +46,18 @@ async def _make_customer(db: AsyncSession, phone: str) -> Customer:
     return c
 
 
-async def _login(client: AsyncClient, user: User, password: str = "pw12345") -> dict[str, str]:
+async def _login(
+    client: AsyncClient, user: User, password: str = "pw12345"
+) -> dict[str, str]:
     res = await client.post(
         "/api/v1/auth/login", json={"email": user.email, "password": password}
     )
     return {"Authorization": f"Bearer {res.json()['access_token']}"}
 
 
-def _loan_payload(customer_id: str, collector_id: str, **overrides: Any) -> dict[str, Any]:
+def _loan_payload(
+    customer_id: str, collector_id: str, **overrides: Any
+) -> dict[str, Any]:
     base: dict[str, Any] = {
         "customer_id": customer_id,
         "collector_id": collector_id,
@@ -91,7 +95,9 @@ class TestCollect:
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
         investor = await _make_user(db_session, "inv-pay1@x.com")
-        collector = await _make_user(db_session, "col-pay1@x.com", role=UserRole.COLLECTOR)
+        collector = await _make_user(
+            db_session, "col-pay1@x.com", role=UserRole.COLLECTOR
+        )
         customer = await _make_customer(db_session, "9999901001")
         inv_headers = await _login(client, investor)
         loan = await _create_loan(client, inv_headers, customer.id, collector.id)
@@ -115,7 +121,9 @@ class TestCollect:
         assert body["schedule_id"] == first_inst["id"]
 
         # Loan should show the payment via /loans/{id}
-        loan_after = await client.get(f"/api/v1/loans/{loan['id']}", headers=col_headers)
+        loan_after = await client.get(
+            f"/api/v1/loans/{loan['id']}", headers=col_headers
+        )
         body_after = loan_after.json()
         assert body_after["paid_count"] == 1
         assert body_after["outstanding"] == loan["repayable"] - first_inst["due_amount"]
@@ -124,7 +132,9 @@ class TestCollect:
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
         investor = await _make_user(db_session, "inv-pay2@x.com")
-        collector = await _make_user(db_session, "col-pay2@x.com", role=UserRole.COLLECTOR)
+        collector = await _make_user(
+            db_session, "col-pay2@x.com", role=UserRole.COLLECTOR
+        )
         customer = await _make_customer(db_session, "9999901002")
         inv_headers = await _login(client, investor)
         loan = await _create_loan(client, inv_headers, customer.id, collector.id)
@@ -135,7 +145,12 @@ class TestCollect:
         await client.post(
             "/api/v1/payments/collect",
             headers=col_headers,
-            json={"loan_id": loan["id"], "amount": partial, "mode": "UPI", "schedule_id": first["id"]},
+            json={
+                "loan_id": loan["id"],
+                "amount": partial,
+                "mode": "UPI",
+                "schedule_id": first["id"],
+            },
         )
         detail = await client.get(f"/api/v1/loans/{loan['id']}", headers=col_headers)
         rows = detail.json()["installments"]
@@ -164,7 +179,9 @@ class TestCollect:
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
         investor = await _make_user(db_session, "inv-pay4@x.com")
-        collector = await _make_user(db_session, "col-pay4@x.com", role=UserRole.COLLECTOR)
+        collector = await _make_user(
+            db_session, "col-pay4@x.com", role=UserRole.COLLECTOR
+        )
         customer = await _make_customer(db_session, "9999901004")
         inv_headers = await _login(client, investor)
         # 2-installment loan for a quick close
@@ -185,11 +202,76 @@ class TestCollect:
                 },
             )
 
-        # Use investor token to verify status — collector lost view rights since loan is closed
+        # Use investor token because a collector loses view rights after closure.
         detail = await client.get(f"/api/v1/loans/{loan['id']}", headers=inv_headers)
         body = detail.json()
         assert body["status"] == "closed"
         assert body["outstanding"] == 0
+
+    async def test_payment_cannot_exceed_remaining_loan_balance(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        investor = await _make_user(db_session, "inv-pay-over@x.com")
+        collector = await _make_user(
+            db_session, "col-pay-over@x.com", role=UserRole.COLLECTOR
+        )
+        customer = await _make_customer(db_session, "9999901005")
+        inv_headers = await _login(client, investor)
+        loan = await _create_loan(
+            client, inv_headers, customer.id, collector.id, total_installments=1
+        )
+        col_headers = await _login(client, collector)
+
+        res = await client.post(
+            "/api/v1/payments/collect",
+            headers=col_headers,
+            json={
+                "loan_id": loan["id"],
+                "amount": loan["repayable"] + 1,
+                "mode": "CASH",
+            },
+        )
+        assert res.status_code == 409
+
+        detail = await client.get(f"/api/v1/loans/{loan['id']}", headers=col_headers)
+        assert detail.json()["repaid"] == 0
+
+    async def test_collection_proof_must_be_an_uploaded_photo_reference(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        investor = await _make_user(db_session, "inv-proof@x.com")
+        collector = await _make_user(
+            db_session, "col-proof@x.com", role=UserRole.COLLECTOR
+        )
+        customer = await _make_customer(db_session, "9999901006")
+        inv_headers = await _login(client, investor)
+        loan = await _create_loan(client, inv_headers, customer.id, collector.id)
+        col_headers = await _login(client, collector)
+
+        rejected = await client.post(
+            "/api/v1/payments/collect",
+            headers=col_headers,
+            json={
+                "loan_id": loan["id"],
+                "amount": loan["installments"][0]["due_amount"],
+                "mode": "CASH",
+                "proof_photo_url": "documents/other-customer/id.pdf",
+            },
+        )
+        assert rejected.status_code == 422
+
+        accepted = await client.post(
+            "/api/v1/payments/collect",
+            headers=col_headers,
+            json={
+                "loan_id": loan["id"],
+                "amount": loan["installments"][0]["due_amount"],
+                "mode": "CASH",
+                "proof_photo_url": "photos/collection-proof.jpg",
+            },
+        )
+        assert accepted.status_code == 201
+        assert accepted.json()["proof_photo_url"] == "photos/collection-proof.jpg"
 
 
 @pytest.mark.integration
@@ -198,7 +280,9 @@ class TestMissed:
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
         investor = await _make_user(db_session, "inv-mis1@x.com")
-        collector = await _make_user(db_session, "col-mis1@x.com", role=UserRole.COLLECTOR)
+        collector = await _make_user(
+            db_session, "col-mis1@x.com", role=UserRole.COLLECTOR
+        )
         customer = await _make_customer(db_session, "9999901010")
         inv_headers = await _login(client, investor)
         loan = await _create_loan(client, inv_headers, customer.id, collector.id)
@@ -223,6 +307,37 @@ class TestMissed:
         rows = detail.json()["installments"]
         assert rows[0]["status"] == "missed"
 
+    async def test_missed_installment_cannot_extend_schedule_twice(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        investor = await _make_user(db_session, "inv-mis-repeat@x.com")
+        collector = await _make_user(
+            db_session, "col-mis-repeat@x.com", role=UserRole.COLLECTOR
+        )
+        customer = await _make_customer(db_session, "9999901011")
+        inv_headers = await _login(client, investor)
+        loan = await _create_loan(client, inv_headers, customer.id, collector.id)
+        col_headers = await _login(client, collector)
+        payload = {
+            "loan_id": loan["id"],
+            "schedule_id": loan["installments"][0]["id"],
+            "reason": "Customer unavailable",
+        }
+
+        assert (
+            await client.post(
+                "/api/v1/payments/missed", headers=col_headers, json=payload
+            )
+        ).status_code == 201
+        assert (
+            await client.post(
+                "/api/v1/payments/missed", headers=col_headers, json=payload
+            )
+        ).status_code == 409
+
+        detail = await client.get(f"/api/v1/loans/{loan['id']}", headers=col_headers)
+        assert len(detail.json()["installments"]) == len(loan["installments"]) + 1
+
 
 @pytest.mark.integration
 class TestMyDay:
@@ -230,7 +345,9 @@ class TestMyDay:
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
         investor = await _make_user(db_session, "inv-my1@x.com")
-        collector = await _make_user(db_session, "col-my1@x.com", role=UserRole.COLLECTOR)
+        collector = await _make_user(
+            db_session, "col-my1@x.com", role=UserRole.COLLECTOR
+        )
         customer = await _make_customer(db_session, "9999901020")
         inv_headers = await _login(client, investor)
         # Loan that started 3 days ago — first 3 installments are now due/overdue

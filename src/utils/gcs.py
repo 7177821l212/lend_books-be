@@ -13,10 +13,11 @@ Callers use the same API regardless of backend: ``upload_photo`` /
 the DB, and ``generate_signed_url`` turns that object name into a URL the client
 can load directly.
 """
+
 import logging
 import os
 import uuid
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from src.config.settings import settings
 
@@ -54,7 +55,9 @@ def _gcs_available() -> bool:
             _use_gcs = True
         else:
             # Probe ADC — raises DefaultCredentialsError when unavailable.
-            google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+            google.auth.default(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
             _use_gcs = True
     except Exception as exc:  # noqa: BLE001 — any failure means "fall back to local"
         logger.warning("GCS unavailable (%s); using local filesystem storage", exc)
@@ -78,7 +81,9 @@ def _client_and_credentials():
         return storage.Client(credentials=creds), creds
 
     # ADC — Cloud Run / GCE
-    creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    creds, _ = google.auth.default(
+        scopes=["https://www.googleapis.com/auth/cloud-platform"]
+    )
     creds.refresh(google.auth.transport.requests.Request())
     return storage.Client(credentials=creds), creds
 
@@ -91,11 +96,20 @@ def strip_gs_prefix(object_name: str) -> str:
     return object_name
 
 
+def is_safe_object_name(object_name: str) -> bool:
+    """Return whether an object name is a relative, non-traversing GCS path."""
+    normalized = strip_gs_prefix(object_name)
+    parts = normalized.split("/")
+    return bool(normalized) and all(part not in {"", ".", ".."} for part in parts)
+
+
 # --------------------------------------------------------------------------- #
 # Local filesystem backend
 # --------------------------------------------------------------------------- #
 def _local_path(object_name: str) -> str:
     safe = strip_gs_prefix(object_name).lstrip("/")
+    if not is_safe_object_name(safe):
+        raise ValueError("invalid object path")
     return os.path.join(settings.LOCAL_UPLOAD_DIR, safe)
 
 
@@ -122,8 +136,10 @@ def save_bytes(content: bytes, content_type: str, object_name: str) -> str:
         blob = client.bucket(settings.GCS_BUCKET_NAME).blob(object_name)
         blob.upload_from_string(content, content_type=content_type)
         logger.info("Uploaded to gs://%s/%s", settings.GCS_BUCKET_NAME, object_name)
-    else:
+    elif settings.APP_ENV.lower() != "production":
         _save_local(object_name, content)
+    else:
+        raise RuntimeError("GCS storage is unavailable in production")
     return object_name
 
 
@@ -163,13 +179,13 @@ def generate_signed_url(object_name: str, expiry_hours: int = 1) -> str:
 
 
 def storage_configured() -> bool:
-    """True when uploads are usable (either GCS or the local fallback)."""
-    return True  # local fallback is always available
+    """True when the configured storage backend is usable for this environment."""
+    return _gcs_available() or settings.APP_ENV.lower() != "production"
 
 
 def get_gcs_path(customer_id: str, doc_type: str, filename: str) -> str:
     """Generate an object path for a customer document."""
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     safe_name = os.path.basename(filename).replace(" ", "_")
     return f"documents/{customer_id}/{doc_type}/{timestamp}_{safe_name}"
 
@@ -185,7 +201,10 @@ class GCSClient:
         return generate_signed_url(blob_name, expiration_hours)
 
     def upload_from_string(
-        self, blob_name: str, content: bytes, content_type: str = "application/octet-stream"
+        self,
+        blob_name: str,
+        content: bytes,
+        content_type: str = "application/octet-stream",
     ) -> str:
         """Store bytes and return the object name (not a gs:// URI)."""
         return save_bytes(content, content_type, blob_name)
