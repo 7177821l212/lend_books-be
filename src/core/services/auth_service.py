@@ -4,7 +4,7 @@ import secrets
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.exceptions.base import UnauthorizedError
+from src.core.exceptions.base import UnauthorizedError, ValidationError
 from src.data.repositories.revoked_token_repository import RevokedTokenRepository
 from src.data.repositories.user_repository import UserRepository
 from src.schemas.auth import TokenResponse, UserMe
@@ -16,6 +16,7 @@ from src.utils.security import (
     refresh_session_marker,
     verify_password,
 )
+from src.utils import gcs
 
 
 class AuthService:
@@ -77,6 +78,18 @@ class AuthService:
         user = await self.users.get_by_id(user_id)
         if user is None:
             raise UnauthorizedError("user not found")
+        return UserMe.model_validate(user)
+
+    async def update_my_profile_photo(self, user_id: str, photo_url: str) -> UserMe:
+        normalized = gcs.strip_gs_prefix(photo_url)
+        if not normalized.startswith("photos/") or not gcs.is_safe_object_name(normalized):
+            raise ValidationError("photo_url must reference an uploaded photo")
+        user = await self.users.get_by_id(user_id)
+        if user is None:
+            raise UnauthorizedError("user not found")
+        user.photo_url = normalized
+        await self.users.session.flush()
+        await self.users.session.refresh(user)
         return UserMe.model_validate(user)
 
     async def change_password(
