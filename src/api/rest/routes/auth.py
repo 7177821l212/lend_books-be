@@ -3,7 +3,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.middleware.rate_limit import limiter
 from src.api.rest.dependencies import get_current_user, get_db
-from src.schemas.auth import ChangePasswordRequest, LoginRequest, RefreshRequest, TokenResponse, UserMe
+from src.schemas.auth import (
+    ChangePasswordRequest,
+    LoginRequest,
+    ProfilePhotoUpdate,
+    RefreshRequest,
+    TokenResponse,
+    UserMe,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -28,6 +35,17 @@ async def me(
 ) -> UserMe:
     from src.core.services.auth_service import AuthService
     return await AuthService(db).get_me(current_user["sub"])
+
+
+@router.patch("/me", response_model=UserMe)
+async def update_my_profile_photo(
+    body: ProfilePhotoUpdate,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> UserMe:
+    from src.core.services.auth_service import AuthService
+
+    return await AuthService(db).update_my_profile_photo(current_user["sub"], body.photo_url)
 
 
 @router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
