@@ -266,7 +266,7 @@ pytest
 
 ## Code Standards
 
-Follows [GenWorx COE Python Standards](../docs/COE/python-standard.md):
+Follows the project Python standards:
 - Async-first (`async/await` for all I/O)
 - Architecture: `routes → services → repositories → models`
 - Pydantic v2 for all input validation

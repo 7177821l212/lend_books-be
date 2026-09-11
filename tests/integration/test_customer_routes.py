@@ -390,14 +390,14 @@ class TestCustomerDocuments:
         response = await client.post(
             f"/api/v1/customers/{customer.id}/documents",
             headers=headers,
-            data={"doc_type": "id_proof"},
+            data={"doc_type": "ID Proof"},
             files={"file": ("identity.pdf", b"%PDF-1.7 test", "application/pdf")},
         )
 
         assert response.status_code == 201
         body = response.json()
-        assert body["doc_type"] == "id_proof"
-        assert body["file_url"].startswith(f"documents/{customer.id}/id_proof/")
+        assert body["doc_type"] == "ID Proof"
+        assert body["file_url"].startswith(f"documents/{customer.id}/id-proof/")
         assert saved["content"] == b"%PDF-1.7 test"
         assert saved["content_type"] == "application/pdf"
 

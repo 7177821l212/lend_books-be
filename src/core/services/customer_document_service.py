@@ -41,13 +41,14 @@ class CustomerDocumentService:
         await self._must_view(current_user, customer_id)
 
         normalized_doc_type = doc_type.strip()
-        if not re.fullmatch(r"[A-Za-z0-9_-]{1,50}", normalized_doc_type):
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _-]{0,49}", normalized_doc_type):
             raise ValidationError(
-                "document type may contain only letters, numbers, hyphens, and "
+                "document type may contain letters, numbers, spaces, hyphens, and "
                 "underscores"
             )
 
-        object_name = gcs.get_gcs_path(customer_id, normalized_doc_type, filename)
+        storage_doc_type = re.sub(r"[\s_]+", "-", normalized_doc_type).lower()
+        object_name = gcs.get_gcs_path(customer_id, storage_doc_type, filename)
         content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         gcs.save_bytes(file_content, content_type, object_name)
 
