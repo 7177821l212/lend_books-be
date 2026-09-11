@@ -1,10 +1,8 @@
 import logging
 import logging.config
-import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -29,7 +27,10 @@ _LOG_CONFIG = {
     "disable_existing_loggers": False,
     "formatters": {
         "json": {
-            "format": '{"time":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","msg":"%(message)s"}',
+            "format": (
+                '{"time":"%(asctime)s","level":"%(levelname)s",'
+                '"logger":"%(name)s","msg":"%(message)s"}'
+            ),
             "datefmt": "%Y-%m-%dT%H:%M:%S",
         },
         "plain": {
@@ -82,11 +83,5 @@ def create_app() -> FastAPI:
     app.include_router(collectors.router, prefix="/api/v1")
     app.include_router(reports.router, prefix="/api/v1")
     app.include_router(uploads.router, prefix="/api/v1")
-
-    # Serve locally-stored uploads (used by the local filesystem storage
-    # fallback when GCS credentials are unavailable). No-op in prod where
-    # objects live in GCS and are fetched via signed URLs.
-    os.makedirs(settings.LOCAL_UPLOAD_DIR, exist_ok=True)
-    app.mount("/files", StaticFiles(directory=settings.LOCAL_UPLOAD_DIR), name="files")
 
     return app

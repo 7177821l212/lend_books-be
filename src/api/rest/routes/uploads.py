@@ -30,8 +30,7 @@ def _matches_image_signature(content: bytes, content_type: str) -> bool:
 
 
 def _require_bucket() -> None:
-    # Storage is always available — GCS in production, local filesystem fallback
-    # in dev — so this only guards against a misconfigured deployment.
+    # All uploads use GCS. Fail early with a clear response if it is unavailable.
     if not gcs.storage_configured():
         raise HTTPException(status_code=503, detail="Photo storage is not configured")
 

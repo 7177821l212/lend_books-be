@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from src.api.rest.routes.uploads import _matches_image_signature
 from src.config.settings import Settings
+from src.utils import gcs
 from src.utils.gcs import is_safe_object_name
 
 
@@ -50,10 +51,19 @@ def test_production_rejects_missing_or_placeholder_configuration(
         ("photos//customer.jpg", False),
     ],
 )
-def test_object_names_cannot_traverse_local_storage(
+def test_object_names_cannot_traverse_storage(
     object_name: str, expected: bool
 ) -> None:
     assert is_safe_object_name(object_name) is expected
+
+
+def test_storage_never_falls_back_to_the_local_filesystem(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gcs, "_use_gcs", False)
+
+    with pytest.raises(RuntimeError, match="GCS storage is unavailable"):
+        gcs.save_bytes(b"file", "application/pdf", "documents/customer/id.pdf")
 
 
 @pytest.mark.parametrize(
