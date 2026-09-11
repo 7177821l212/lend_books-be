@@ -27,6 +27,7 @@ class UserMe(BaseModel):
     phone: str | None = None
     role: UserRole
     is_active: bool = True
+    photo_url: str | None = None
 
     model_config = {"from_attributes": True}
 
