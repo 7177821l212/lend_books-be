@@ -1,17 +1,8 @@
-"""Object storage utilities — upload + URL generation.
+"""Google Cloud Storage utilities for private uploaded objects.
 
-Two backends, chosen automatically:
-
-* **GCS** (production / Cloud Run) — private bucket + v4 signed URLs.
-* **Local filesystem** (fallback) — used when GCS credentials cannot be
-  resolved (e.g. local Docker dev without a service-account key or ADC). Files
-  are written under ``settings.LOCAL_UPLOAD_DIR`` and served publicly from
-  ``{settings.PUBLIC_BASE_URL}/files/<object_name>``.
-
-Callers use the same API regardless of backend: ``upload_photo`` /
-``save_bytes`` return an *object name* (e.g. ``photos/abc.jpg``) to persist in
-the DB, and ``generate_signed_url`` turns that object name into a URL the client
-can load directly.
+All application uploads are stored in the configured GCS bucket. There is no
+filesystem fallback: an unavailable bucket is a visible failure rather than a
+silent write to ephemeral Cloud Run storage.
 """
 
 import logging
@@ -59,8 +50,8 @@ def _gcs_available() -> bool:
                 scopes=["https://www.googleapis.com/auth/cloud-platform"]
             )
             _use_gcs = True
-    except Exception as exc:  # noqa: BLE001 — any failure means "fall back to local"
-        logger.warning("GCS unavailable (%s); using local filesystem storage", exc)
+    except Exception as exc:  # noqa: BLE001 -- surface the failure to callers.
+        logger.error("GCS is unavailable: %s", exc)
         _use_gcs = False
     return _use_gcs
 
@@ -104,29 +95,6 @@ def is_safe_object_name(object_name: str) -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# Local filesystem backend
-# --------------------------------------------------------------------------- #
-def _local_path(object_name: str) -> str:
-    safe = strip_gs_prefix(object_name).lstrip("/")
-    if not is_safe_object_name(safe):
-        raise ValueError("invalid object path")
-    return os.path.join(settings.LOCAL_UPLOAD_DIR, safe)
-
-
-def _save_local(object_name: str, content: bytes) -> None:
-    path = _local_path(object_name)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as fh:
-        fh.write(content)
-    logger.info("Saved object locally at %s", path)
-
-
-def _local_url(object_name: str) -> str:
-    base = settings.PUBLIC_BASE_URL.rstrip("/")
-    return f"{base}/files/{strip_gs_prefix(object_name).lstrip('/')}"
-
-
-# --------------------------------------------------------------------------- #
 # Public API
 # --------------------------------------------------------------------------- #
 def save_bytes(content: bytes, content_type: str, object_name: str) -> str:
@@ -136,10 +104,8 @@ def save_bytes(content: bytes, content_type: str, object_name: str) -> str:
         blob = client.bucket(settings.GCS_BUCKET_NAME).blob(object_name)
         blob.upload_from_string(content, content_type=content_type)
         logger.info("Uploaded to gs://%s/%s", settings.GCS_BUCKET_NAME, object_name)
-    elif settings.APP_ENV.lower() != "production":
-        _save_local(object_name, content)
     else:
-        raise RuntimeError("GCS storage is unavailable in production")
+        raise RuntimeError("GCS storage is unavailable")
     return object_name
 
 
@@ -153,13 +119,13 @@ def upload_photo(content: bytes, content_type: str, prefix: str = "photos") -> s
 def generate_signed_url(object_name: str, expiry_hours: int = 1) -> str:
     """Return a URL the client can load directly for a stored object.
 
-    GCS backend → a time-limited v4 signed URL. Local backend → a public
-    ``/files/...`` URL. Tolerates a legacy ``gs://bucket/...`` object name.
+    Returns a time-limited GCS v4 signed URL. Tolerates a legacy
+    ``gs://bucket/...`` object name.
     """
     object_name = strip_gs_prefix(object_name)
 
     if not _gcs_available():
-        return _local_url(object_name)
+        raise RuntimeError("GCS storage is unavailable")
 
     client, creds = _client_and_credentials()
     blob = client.bucket(settings.GCS_BUCKET_NAME).blob(object_name)
@@ -179,8 +145,8 @@ def generate_signed_url(object_name: str, expiry_hours: int = 1) -> str:
 
 
 def storage_configured() -> bool:
-    """True when the configured storage backend is usable for this environment."""
-    return _gcs_available() or settings.APP_ENV.lower() != "production"
+    """True when the configured GCS bucket and credentials are usable."""
+    return _gcs_available()
 
 
 def get_gcs_path(customer_id: str, doc_type: str, filename: str) -> str:
@@ -191,8 +157,7 @@ def get_gcs_path(customer_id: str, doc_type: str, filename: str) -> str:
 
 
 class GCSClient:
-    """Legacy wrapper kept for backward compatibility. Routes through the
-    unified storage layer, so it transparently uses the local fallback too."""
+    """Compatibility wrapper for the GCS-only storage layer."""
 
     def __init__(self, bucket_name: str) -> None:
         self.bucket_name = bucket_name
@@ -215,7 +180,4 @@ class GCSClient:
             client.bucket(self.bucket_name).blob(blob_name).delete()
             logger.info("Deleted gs://%s/%s", self.bucket_name, blob_name)
         else:
-            path = _local_path(blob_name)
-            if os.path.exists(path):
-                os.remove(path)
-                logger.info("Deleted local object %s", path)
+            raise RuntimeError("GCS storage is unavailable")
