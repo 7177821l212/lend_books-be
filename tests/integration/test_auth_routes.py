@@ -112,6 +112,31 @@ class TestMeRoute:
         res = await client.get("/api/v1/auth/me")
         assert res.status_code == 401
 
+    async def test_me_can_update_its_own_profile_photo(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        await _make_user(db_session, email="photo@example.com", password="pw12345")
+        login = await client.post(
+            "/api/v1/auth/login",
+            json={"email": "photo@example.com", "password": "pw12345"},
+        )
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        res = await client.patch(
+            "/api/v1/auth/me",
+            headers=headers,
+            json={"photo_url": "photos/profile.jpg"},
+        )
+        assert res.status_code == 200
+        assert res.json()["photo_url"] == "photos/profile.jpg"
+
+        invalid = await client.patch(
+            "/api/v1/auth/me",
+            headers=headers,
+            json={"photo_url": "documents/not-a-profile.jpg"},
+        )
+        assert invalid.status_code == 422
+
     async def test_me_with_bad_token_returns_401(self, client: AsyncClient) -> None:
         res = await client.get(
             "/api/v1/auth/me", headers={"Authorization": "Bearer not.a.jwt"}
