@@ -90,6 +90,8 @@ class TestMeRoute:
         user = await _make_user(
             db_session, email="me@example.com", password="pw12345", role=UserRole.COLLECTOR
         )
+        user.photo_url = "photos/collector-profile.jpg"
+        await db_session.commit()
         login = await client.post(
             "/api/v1/auth/login",
             json={"email": "me@example.com", "password": "pw12345"},
@@ -104,6 +106,7 @@ class TestMeRoute:
         assert body["id"] == user.id
         assert body["email"] == "me@example.com"
         assert body["role"] == "collector"
+        assert body["photo_url"] == "photos/collector-profile.jpg"
 
     async def test_me_without_token_returns_401(self, client: AsyncClient) -> None:
         res = await client.get("/api/v1/auth/me")
