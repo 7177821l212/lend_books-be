@@ -129,6 +129,20 @@ class DashboardService:
                 )
             )
         ).scalar_one()
+        overdue_amount = (
+            await self.session.execute(
+                select(
+                    func.coalesce(
+                        func.sum(Installment.due_amount - Installment.paid_amount), 0
+                    )
+                )
+                .join(Loan, Loan.id == Installment.loan_id)
+                .where(
+                    Loan.status == LoanStatus.ACTIVE.value,
+                    Installment.status.in_(["overdue", "missed"]),
+                )
+            )
+        ).scalar_one()
 
         active_customers = (
             await self.session.execute(
@@ -150,6 +164,7 @@ class DashboardService:
             active_loans=int(active_loans),
             closed_loans=int(closed_loans),
             overdue_loans=int(overdue_loans),
+            overdue_amount=max(0, int(overdue_amount)),
             active_customers=int(active_customers),
             total_customers=int(total_customers),
         )

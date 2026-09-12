@@ -7,8 +7,9 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.constants.enums import UserRole
+from src.constants.enums import InstallmentStatus, UserRole
 from src.data.models.postgres.customer import Customer
+from src.data.models.postgres.installment import Installment
 from src.data.models.postgres.user import User
 from src.utils.security import hash_password
 
@@ -84,6 +85,7 @@ class TestDashboard:
         body = res.json()
         assert body["kpis"]["capital_disbursed"] == 0
         assert body["kpis"]["active_loans"] == 0
+        assert body["kpis"]["overdue_amount"] == 0
         assert len(body["trend_30d"]) == 30
 
     async def test_dashboard_reflects_real_loans_and_payments(
@@ -121,6 +123,31 @@ class TestDashboard:
         assert body["kpis"]["collected_today"] == first["due_amount"]
         assert body["kpis"]["active_loans"] == 1
         assert body["kpis"]["active_customers"] == 1
+
+    async def test_dashboard_reports_the_overdue_amount(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        investor = await _make_user(db_session, "inv-due@x.com")
+        collector = await _make_user(db_session, "col-due@x.com", role=UserRole.COLLECTOR)
+        customer = await _make_customer(db_session, "9999902002")
+        headers = await _login(client, investor)
+
+        created = await client.post(
+            "/api/v1/loans",
+            headers=headers,
+            json=_loan_payload(customer.id, collector.id),
+        )
+        first_installment = created.json()["installments"][0]
+        installment = await db_session.get(Installment, first_installment["id"])
+        assert installment is not None
+        installment.status = InstallmentStatus.OVERDUE.value
+        await db_session.flush()
+
+        response = await client.get("/api/v1/dashboard", headers=headers)
+
+        assert response.status_code == 200
+        assert response.json()["kpis"]["overdue_loans"] == 1
+        assert response.json()["kpis"]["overdue_amount"] == first_installment["due_amount"]
 
     async def test_collector_cannot_call_dashboard(
         self, client: AsyncClient, db_session: AsyncSession

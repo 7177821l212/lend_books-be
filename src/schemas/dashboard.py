@@ -16,6 +16,7 @@ class DashboardKPIs(BaseModel):
     active_loans: int
     closed_loans: int
     overdue_loans: int
+    overdue_amount: int
     active_customers: int
     total_customers: int
 
