@@ -66,6 +66,7 @@ class CustomerService:
                 blacklist_reason=c.blacklist_reason,
                 active_loan_count=active_count,
                 total_outstanding=max(0, outstanding),
+                photo_url=c.photo_url,
             )
             for c, active_count, outstanding in rows
         ]
@@ -94,6 +95,7 @@ class CustomerService:
             blacklist_reason=customer.blacklist_reason,
             active_loan_count=summary[0],
             total_outstanding=summary[1],
+            photo_url=customer.photo_url,
         )
 
     async def _loan_summary_for(self, customer_id: str) -> tuple[int, int]:
