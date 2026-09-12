@@ -174,6 +174,23 @@ class TestCustomerList:
         assert len(body2["items"]) == 1
         assert body2["has_next"] is False
 
+    async def test_list_includes_persisted_profile_photo(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        investor = await _make_user(db_session, "inv-photo-list@x.com")
+        customer = await _make_customer(db_session, "Photo Customer", "9000000049")
+        customer.photo_url = "photos/customer-profile.png"
+        await db_session.flush()
+
+        headers = await _login_as(client, investor)
+        response = await client.get("/api/v1/customers", headers=headers)
+
+        assert response.status_code == 200
+        item = next(
+            item for item in response.json()["items"] if item["id"] == customer.id
+        )
+        assert item["photo_url"] == "photos/customer-profile.png"
+
 
 @pytest.mark.integration
 class TestCustomerCreate:
@@ -286,6 +303,20 @@ class TestCustomerBlacklist:
 
 @pytest.mark.integration
 class TestCustomerGet:
+    async def test_get_includes_persisted_profile_photo(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        investor = await _make_user(db_session, "inv-photo-get@x.com")
+        customer = await _make_customer(db_session, "Photo Customer", "9000000089")
+        customer.photo_url = "photos/customer-profile.png"
+        await db_session.flush()
+
+        headers = await _login_as(client, investor)
+        response = await client.get(f"/api/v1/customers/{customer.id}", headers=headers)
+
+        assert response.status_code == 200
+        assert response.json()["photo_url"] == "photos/customer-profile.png"
+
     async def test_get_nonexistent_returns_404(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
