@@ -5,10 +5,12 @@ from __future__ import annotations
 import calendar
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from src.constants.enums import (
+    OPEN_INSTALLMENT_STATUSES,
     InstallmentStatus,
     LoanStatus,
     RepaymentFrequency,
@@ -18,17 +20,18 @@ from src.core.exceptions.base import (
     ConflictError,
     ForbiddenError,
     NotFoundError,
-    ValidationError,
 )
 from src.data.models.postgres.customer import Customer
 from src.data.models.postgres.installment import Installment
 from src.data.models.postgres.loan import Loan
 from src.data.models.postgres.payment import Payment
+from src.data.models.postgres.payment_allocation import PaymentAllocation
 from src.schemas.common import PaginatedResponse
 from src.schemas.payment import (
     CollectRequest,
     MissedRequest,
     MyDayResponse,
+    PaymentAllocationResponse,
     PaymentResponse,
     PickupItem,
 )
@@ -62,28 +65,17 @@ class PaymentService:
         if body.amount > remaining_balance:
             raise ConflictError("payment exceeds the remaining loan balance")
 
-        installment = await self._pick_installment(loan, body.schedule_id)
-        outstanding_on_inst = installment.due_amount - installment.paid_amount
-        if outstanding_on_inst <= 0:
-            raise ConflictError("selected installment is already fully paid")
-
-        # Cap the credit applied to this installment; backend never over-credits a row
-        credit = min(body.amount, outstanding_on_inst)
-        installment.paid_amount += credit
-        installment.status = (
-            InstallmentStatus.PAID.value
-            if installment.paid_amount >= installment.due_amount
-            else InstallmentStatus.PARTIAL.value
-        )
-
-        # Propagate any overpayment to subsequent open installments
-        excess = body.amount - credit
-        if excess > 0:
-            await self._apply_excess_to_next(loan, installment.sequence, excess)
+        # `schedule_id` is validated as a staleness check on the caller's view of
+        # the schedule, but it does NOT steer allocation: a receipt always clears
+        # the oldest unpaid rows first, then carries forward as advance credit.
+        if body.schedule_id is not None:
+            selected = await self.session.get(Installment, body.schedule_id)
+            if selected is None or selected.loan_id != loan.id or not selected.is_active:
+                raise NotFoundError("installment", body.schedule_id)
 
         payment = Payment(
             loan_id=loan.id,
-            schedule_id=installment.id,
+            schedule_id=None,
             collector_id=current_user["sub"],
             is_missed=False,
             amount=body.amount,
@@ -94,9 +86,14 @@ class PaymentService:
         self.session.add(payment)
         await self.session.flush()
 
+        allocations = await self._allocate_payment(loan, payment, body.amount)
+        # Points at the oldest row this receipt touched — kept for continuity with
+        # pre-allocation payments. `allocations` is the authoritative breakdown.
+        payment.schedule_id = allocations[0].installment_id if allocations else None
+
         await self._maybe_close_loan(loan)
-        await self.session.refresh(payment)
-        return PaymentResponse.model_validate(payment)
+        await self.session.flush()
+        return self._payment_response(payment, allocations)
 
     # ------------------------------------------------------------------
     # Mark missed
@@ -110,19 +107,39 @@ class PaymentService:
             raise ConflictError(f"loan is {loan.status}; cannot mark missed")
 
         installment = await self.session.get(Installment, body.schedule_id)
-        if installment is None or installment.loan_id != loan.id:
+        # A replaced row keeps its old PENDING/PARTIAL status, so without the
+        # `is_active` check a collector working from a stale pickup list could
+        # mark one missed and have `_extend_schedule` append a phantom
+        # installment for money the replacement plan already covers.
+        if installment is None or installment.loan_id != loan.id or not installment.is_active:
             raise NotFoundError("installment", body.schedule_id)
-        if installment.status not in {
-            InstallmentStatus.PENDING.value,
-            InstallmentStatus.PARTIAL.value,
-            InstallmentStatus.DUE_TODAY.value,
-            InstallmentStatus.OVERDUE.value,
-        }:
+        if installment.status not in OPEN_INSTALLMENT_STATUSES:
             raise ConflictError("installment cannot be marked missed")
+        # "Missed" means the collector came away from TODAY's visit with
+        # nothing. Taking ₹1,100 on a ₹2,200 visit and then calling that same
+        # visit missed contradicts the receipt the customer is holding — and
+        # under the carry-forward rule it would also shunt the shortfall to the
+        # end of the schedule instead of leaving it owed on its own date.
+        #
+        # The test is deliberately "collected TODAY", not "paid_amount > 0": a
+        # row can hold advance credit from an earlier lump sum and still be a
+        # genuinely missed visit today.
+        collected_today = await self._collected_today_for(installment.id)
+        if collected_today > 0:
+            raise ConflictError(
+                f"₹{collected_today:,} was already collected on this installment "
+                "today; record a short payment instead of a missed visit"
+            )
         installment.status = InstallmentStatus.MISSED.value
 
-        # Extend the loan schedule by adding one installment at the end
-        await self._extend_schedule(loan, installment.due_amount)
+        # Carry only what is STILL OWED on this visit to the end of the
+        # schedule. Money already collected against it stays collected: pushing
+        # the full `due_amount` would re-bill the customer for cash they have
+        # already handed over (₹1,100 paid on a ₹2,200 visit became a ₹2,200
+        # catch-up row, so they owed ₹1,100 more than the contract).
+        await self._extend_schedule(
+            loan, installment.due_amount - installment.paid_amount
+        )
 
         payment = Payment(
             loan_id=loan.id,
@@ -136,8 +153,8 @@ class PaymentService:
         )
         self.session.add(payment)
         await self.session.flush()
-        await self.session.refresh(payment)
-        return PaymentResponse.model_validate(payment)
+        # A missed visit moves no cash, so it carries no allocations.
+        return self._payment_response(payment, [])
 
     # ------------------------------------------------------------------
     # History
@@ -171,9 +188,14 @@ class PaymentService:
             )
         ).scalar_one()
         result = await self.session.execute(
-            base.order_by(Payment.collected_at.desc()).offset(offset).limit(page_size)
+            base.options(
+                selectinload(Payment.allocations).selectinload(PaymentAllocation.installment)
+            )
+            .order_by(Payment.collected_at.desc())
+            .offset(offset)
+            .limit(page_size)
         )
-        items = [PaymentResponse.model_validate(p) for p in result.scalars()]
+        items = [self._payment_response(p, list(p.allocations)) for p in result.scalars()]
 
         return PaginatedResponse[PaymentResponse](
             items=items,
@@ -203,15 +225,9 @@ class PaymentService:
             .where(
                 Loan.collector_id == current_user["sub"],
                 Loan.status == LoanStatus.ACTIVE.value,
+                Installment.is_active.is_(True),
                 Installment.due_date <= today,
-                Installment.status.in_(
-                    [
-                        InstallmentStatus.PENDING.value,
-                        InstallmentStatus.PARTIAL.value,
-                        InstallmentStatus.DUE_TODAY.value,
-                        InstallmentStatus.OVERDUE.value,
-                    ]
-                ),
+                Installment.status.in_(OPEN_INSTALLMENT_STATUSES),
             )
             .order_by(Installment.due_date, Installment.sequence)
         )
@@ -280,13 +296,22 @@ class PaymentService:
             return loan
         raise ForbiddenError("loan not assigned to you")
 
+    async def _collected_today_for(self, installment_id: str) -> int:
+        """Cash allocated to this installment by a payment taken TODAY."""
+        day_start, day_end = utc_day_bounds(business_today())
+        result = await self.session.execute(
+            select(func.coalesce(func.sum(PaymentAllocation.amount), 0))
+            .join(Payment, Payment.id == PaymentAllocation.payment_id)
+            .where(
+                PaymentAllocation.installment_id == installment_id,
+                Payment.is_missed.is_(False),
+                Payment.collected_at >= day_start,
+                Payment.collected_at < day_end,
+            )
+        )
+        return int(result.scalar_one() or 0)
+
     async def _remaining_collectible_balance(self, loan_id: str) -> int:
-        open_statuses = [
-            InstallmentStatus.PENDING.value,
-            InstallmentStatus.PARTIAL.value,
-            InstallmentStatus.DUE_TODAY.value,
-            InstallmentStatus.OVERDUE.value,
-        ]
         result = await self.session.execute(
             select(
                 func.coalesce(
@@ -294,50 +319,24 @@ class PaymentService:
                 )
             ).where(
                 Installment.loan_id == loan_id,
-                Installment.status.in_(open_statuses),
+                Installment.is_active.is_(True),
+                Installment.status.in_(OPEN_INSTALLMENT_STATUSES),
             )
         )
         return int(result.scalar_one() or 0)
 
-    async def _pick_installment(
-        self, loan: Loan, schedule_id: str | None
-    ) -> Installment:
-        """Resolve the installment a payment applies to.
-
-        If `schedule_id` is provided, use it (after verifying it belongs to the loan).
-        Otherwise, take the earliest installment that's not fully paid.
-        """
-        if schedule_id is not None:
-            installment = await self.session.get(Installment, schedule_id)
-            if installment is None or installment.loan_id != loan.id:
-                raise NotFoundError("installment", schedule_id)
-            return installment
-
-        result = await self.session.execute(
-            select(Installment)
-            .where(
-                Installment.loan_id == loan.id,
-                or_(
-                    Installment.status == InstallmentStatus.PENDING.value,
-                    Installment.status == InstallmentStatus.PARTIAL.value,
-                    Installment.status == InstallmentStatus.OVERDUE.value,
-                    Installment.status == InstallmentStatus.DUE_TODAY.value,
-                ),
-            )
-            .order_by(Installment.sequence)
-            .limit(1)
-        )
-        next_open = result.scalar_one_or_none()
-        if next_open is None:
-            raise ValidationError("loan has no open installments")
-        return next_open
-
     async def _maybe_close_loan(self, loan: Loan) -> None:
-        """Close the loan when every installment is PAID."""
+        """Close the loan once nothing collectible is left.
+
+        MISSED rows are excluded on purpose: their shortfall was already moved
+        to a catch-up row at the end of the schedule, so leaving them in this
+        count would keep a fully repaid loan open forever.
+        """
         result = await self.session.execute(
             select(func.count(Installment.id)).where(
                 Installment.loan_id == loan.id,
-                Installment.status != InstallmentStatus.PAID.value,
+                Installment.is_active.is_(True),
+                Installment.status.in_(OPEN_INSTALLMENT_STATUSES),
             )
         )
         unpaid = int(result.scalar_one() or 0)
@@ -348,10 +347,12 @@ class PaymentService:
             await self.session.flush()
 
     async def _extend_schedule(self, loan: Loan, due_amount: int) -> None:
-        """Add one extra installment at the end of the loan schedule."""
+        """Append one catch-up installment for `due_amount` still owed."""
+        if due_amount <= 0:
+            return  # the visit was already covered; there is nothing to move
         result = await self.session.execute(
             select(Installment)
-            .where(Installment.loan_id == loan.id)
+            .where(Installment.loan_id == loan.id, Installment.is_active.is_(True))
             .order_by(Installment.sequence.desc())
             .limit(1)
         )
@@ -368,37 +369,34 @@ class PaymentService:
             due_amount=due_amount,
             paid_amount=0,
             status=InstallmentStatus.PENDING.value,
+            schedule_version=last.schedule_version,
         )
         self.session.add(new_inst)
         loan.total_installments += 1
         await self.session.flush()
 
-    async def _apply_excess_to_next(
-        self, loan: Loan, current_sequence: int, excess: int
-    ) -> None:
-        """Apply overpayment excess to the next open installments in sequence order."""
+    async def _allocate_payment(
+        self, loan: Loan, payment: Payment, amount: int
+    ) -> list[PaymentAllocation]:
+        """Allocate one cash event oldest-first and retain every allocation."""
         result = await self.session.execute(
             select(Installment)
             .where(
                 Installment.loan_id == loan.id,
-                Installment.sequence > current_sequence,
-                Installment.status.in_(
-                    [
-                        InstallmentStatus.PENDING.value,
-                        InstallmentStatus.PARTIAL.value,
-                        InstallmentStatus.OVERDUE.value,
-                        InstallmentStatus.DUE_TODAY.value,
-                    ]
-                ),
+                Installment.is_active.is_(True),
+                Installment.status.in_(OPEN_INSTALLMENT_STATUSES),
             )
-            .order_by(Installment.sequence)
+            .order_by(Installment.due_date, Installment.sequence)
         )
-        next_insts = list(result.scalars())
-        remaining = excess
-        for inst in next_insts:
+        open_installments = list(result.scalars())
+        remaining = amount
+        allocations: list[PaymentAllocation] = []
+        for inst in open_installments:
             if remaining <= 0:
                 break
             available = inst.due_amount - inst.paid_amount
+            if available <= 0:
+                continue  # never write a zero-rupee allocation row
             credit = min(remaining, available)
             inst.paid_amount += credit
             inst.status = (
@@ -407,8 +405,46 @@ class PaymentService:
                 else InstallmentStatus.PARTIAL.value
             )
             remaining -= credit
-        if next_insts:
-            await self.session.flush()
+            allocation = PaymentAllocation(
+                payment_id=payment.id,
+                installment_id=inst.id,
+                amount=credit,
+            )
+            allocation.installment = inst
+            self.session.add(allocation)
+            allocations.append(allocation)
+        if remaining:
+            raise ConflictError("payment exceeds the remaining loan balance")
+        await self.session.flush()
+        return allocations
+
+    @staticmethod
+    def _payment_response(
+        payment: Payment, allocations: list[PaymentAllocation]
+    ) -> PaymentResponse:
+        return PaymentResponse(
+            id=payment.id,
+            loan_id=payment.loan_id,
+            schedule_id=payment.schedule_id,
+            collector_id=payment.collector_id,
+            is_missed=payment.is_missed,
+            missed_reason=payment.missed_reason,
+            amount=payment.amount,
+            mode=payment.mode,
+            notes=payment.notes,
+            proof_photo_url=payment.proof_photo_url,
+            collected_at=payment.collected_at,
+            allocations=[
+                PaymentAllocationResponse(
+                    installment_id=allocation.installment_id,
+                    sequence=allocation.installment.sequence,
+                    due_date=allocation.installment.due_date,
+                    amount=allocation.amount,
+                )
+                for allocation in allocations
+                if allocation.installment is not None
+            ],
+        )
 
 
 def _next_installment_date(last_date: date, frequency: str, meta: dict | None) -> date:

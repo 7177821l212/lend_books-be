@@ -1,8 +1,8 @@
 """Installment ORM model — one row per scheduled payment."""
 
-from datetime import date
+from datetime import date, datetime
 
-from sqlalchemy import Date, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.constants.enums import InstallmentStatus
@@ -20,6 +20,11 @@ class Installment(Base, TimestampMixin):
     due_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     due_amount: Mapped[int] = mapped_column(Integer, nullable=False)
     paid_amount: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Replaced rows remain as immutable history, but are excluded from balances
+    # and collection worklists. A reschedule creates new active rows instead.
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    schedule_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    replaced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(
         String(20), default=InstallmentStatus.PENDING.value, nullable=False, index=True
     )

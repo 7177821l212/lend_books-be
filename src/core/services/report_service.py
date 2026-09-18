@@ -78,6 +78,7 @@ class ReportService:
             .join(Installment, Installment.loan_id == Loan.id)
             .where(
                 Loan.status == LoanStatus.ACTIVE.value,
+                Installment.is_active.is_(True),
                 Installment.status.in_(["overdue", "missed"]),
             )
             .group_by(

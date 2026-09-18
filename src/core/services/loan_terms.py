@@ -174,3 +174,60 @@ def _date_for_index(
             return raw if isinstance(raw, date) else date.fromisoformat(str(raw))
         raise ValueError("CUSTOM frequency requires frequency_meta.interval_days or frequency_meta.dates")
     raise ValueError(f"unsupported frequency: {frequency}")
+
+
+def build_reschedule_plan(
+    *,
+    mode: str,
+    remaining: int,
+    open_due_dates: list[date],
+    first_due_date: date,
+    frequency: RepaymentFrequency,
+    frequency_meta: dict[str, Any] | None,
+    installment_amount: int | None = None,
+) -> list[ScheduleRow]:
+    """Build the replacement rows for an investor reschedule.
+
+    `SAME_END_DATE` keeps the existing open due dates and re-splits `remaining`
+    across them, so the loan finishes on the contracted day for a smaller
+    per-visit amount. `SAME_INSTALLMENT` keeps the per-visit amount and lets the
+    term shrink or grow instead, generating dates from `first_due_date` at the
+    loan's own cadence. Both return rows summing to exactly `remaining`.
+    """
+    if remaining <= 0:
+        raise ValueError("nothing left to reschedule")
+
+    if mode == "same_end_date":
+        if not open_due_dates:
+            raise ValueError("no open due dates to redistribute across")
+        # With fewer rupees left than dates, every row must still be at least ₹1,
+        # so drop dates from the FRONT and keep the contracted finish day — the
+        # whole point of this mode. Dropping from the back would end it early.
+        dates = open_due_dates[-remaining:] if remaining < len(open_due_dates) else open_due_dates
+        _, amounts = split_installment(remaining, len(dates))
+        return [
+            ScheduleRow(sequence=i + 1, due_date=due_date, due_amount=amount)
+            for i, (due_date, amount) in enumerate(zip(dates, amounts, strict=True))
+        ]
+
+    if mode == "same_installment":
+        if installment_amount is None or installment_amount <= 0:
+            raise ValueError("installment_amount must be positive")
+        count, remainder = divmod(remaining, installment_amount)
+        amounts = [installment_amount] * count
+        # The tail rupees ride on the final visit rather than adding a token row.
+        if remainder:
+            if amounts:
+                amounts[-1] += remainder
+            else:
+                amounts = [remainder]
+        return [
+            ScheduleRow(
+                sequence=i + 1,
+                due_date=_date_for_index(first_due_date, i, frequency, frequency_meta),
+                due_amount=amount,
+            )
+            for i, amount in enumerate(amounts)
+        ]
+
+    raise ValueError(f"unsupported reschedule mode: {mode}")
