@@ -644,3 +644,43 @@ class TestOverpayment:
             json={"loan_id": loan["id"], "amount": 22_001, "mode": "CASH"},
         )
         assert res.status_code == 409
+
+
+class TestEarlyPaymentWhenNothingIsDue:
+    """A customer can walk up and pay before anything is due.
+
+    The collector's worklist only lists installments due today or overdue, so
+    on a day with no pickup there is nothing to tap. The API must still accept
+    the money — it is the customer's cash and refusing it is not an option the
+    business has.
+    """
+
+    async def test_collect_is_accepted_with_no_pickup_due_today(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        inv_headers, col_headers, loan = await _setup(
+            client, db_session, "22", principal=20_000, interest_value=10,
+            total_installments=10,
+        )
+        # Push the whole schedule into the future: nothing is due today.
+        await db_session.execute(
+            text(
+                "UPDATE installments SET due_date = due_date + INTERVAL '30 days' "
+                "WHERE loan_id = :loan_id"
+            ),
+            {"loan_id": loan["id"]},
+        )
+        my_day = (await client.get("/api/v1/payments/my-day", headers=col_headers)).json()
+        assert my_day["pickups"] == [], "precondition: the worklist is empty"
+
+        # The customer pays two visits' worth anyway.
+        payment = await _collect(client, col_headers, loan["id"], 4_400)
+        assert [(a["sequence"], a["amount"]) for a in payment["allocations"]] == [
+            (1, 2_200),
+            (2, 2_200),
+        ]
+
+        detail = (await client.get(f"/api/v1/loans/{loan['id']}", headers=inv_headers)).json()
+        assert detail["repaid"] == 4_400
+        assert detail["outstanding"] == 17_600
+        assert detail["repaid"] + detail["outstanding"] == 22_000
