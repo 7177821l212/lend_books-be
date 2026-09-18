@@ -7,7 +7,9 @@ from src.data.models.postgres.customer_document import CustomerDocument
 from src.data.models.postgres.installment import Installment
 from src.data.models.postgres.loan import Loan
 from src.data.models.postgres.payment import Payment
+from src.data.models.postgres.payment_allocation import PaymentAllocation
 from src.data.models.postgres.revoked_token import RevokedToken
+from src.data.models.postgres.schedule_revision import ScheduleRevision
 from src.data.models.postgres.user import User
 
 __all__ = [
@@ -18,7 +20,9 @@ __all__ = [
     "Installment",
     "Loan",
     "Payment",
+    "PaymentAllocation",
     "RevokedToken",
+    "ScheduleRevision",
     "TimestampMixin",
     "User",
     "generate_uuid",

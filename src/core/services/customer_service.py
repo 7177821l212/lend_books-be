@@ -1,7 +1,7 @@
 """Customer service — RBAC + computed loan summary."""
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -119,6 +119,8 @@ class CustomerService:
                     select(func.sum(Installment.paid_amount))
                     .select_from(Installment)
                     .join(Loan, Loan.id == Installment.loan_id)
+                    # Collected cash: replaced rows keep their paid_amount, so
+                    # they must stay in this sum (see customer_repository).
                     .where(
                         Loan.customer_id == customer_id,
                         Loan.status == LoanStatus.ACTIVE.value,
@@ -205,7 +207,7 @@ class CustomerService:
         if int(active_count) > 0:
             raise ConflictError("close or reassign active loans before deleting this customer")
         customer.is_deleted = True
-        customer.deleted_at = datetime.now(timezone.utc)
+        customer.deleted_at = datetime.now(UTC)
         await self.session.flush()
 
     async def blacklist(

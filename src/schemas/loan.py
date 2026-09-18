@@ -11,6 +11,7 @@ from src.constants.enums import (
     LendingModel,
     LoanStatus,
     RepaymentFrequency,
+    RescheduleMode,
 )
 
 
@@ -40,6 +41,9 @@ class InstallmentResponse(BaseModel):
     due_amount: int
     paid_amount: int = 0
     status: InstallmentStatus
+    is_active: bool = True
+    schedule_version: int = 1
+    replaced_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -87,3 +91,82 @@ class CloseLoanRequest(BaseModel):
 
 class AssignCollectorRequest(BaseModel):
     collector_id: str
+
+
+class RescheduleInstallment(BaseModel):
+    due_date: date
+    due_amount: int = Field(gt=0, le=10_00_00_000)
+
+
+class RescheduleRequest(BaseModel):
+    """Investor-approved replacement plan for currently open schedule rows.
+
+    Paid rows and the payment ledger are never touched — only rows that still
+    expect money are replaced, and the old rows survive as inactive history.
+    """
+
+    reason: str = Field(min_length=3, max_length=255)
+    mode: RescheduleMode = RescheduleMode.MANUAL
+    # MANUAL only
+    installments: list[RescheduleInstallment] = Field(
+        default_factory=list, max_length=10_000
+    )
+    # SAME_INSTALLMENT only
+    installment_amount: int | None = Field(default=None, gt=0, le=10_00_00_000)
+    # Optional override for the first new due date (defaults to the earliest open row)
+    start_date: date | None = None
+
+    @model_validator(mode="after")
+    def validate_mode_inputs(self) -> "RescheduleRequest":
+        if self.mode is RescheduleMode.MANUAL:
+            if not self.installments:
+                raise ValueError("manual mode requires at least one installment")
+            dates = [row.due_date for row in self.installments]
+            if dates != sorted(dates):
+                raise ValueError(
+                    "rescheduled installment dates must be in ascending order"
+                )
+        elif self.installments:
+            raise ValueError(
+                f"{self.mode.value} mode derives its own rows; omit 'installments'"
+            )
+        needs_amount = self.mode is RescheduleMode.SAME_INSTALLMENT
+        if needs_amount and self.installment_amount is None:
+            raise ValueError("same_installment mode requires 'installment_amount'")
+        if not needs_amount and self.installment_amount is not None:
+            raise ValueError(
+                "'installment_amount' only applies to same_installment mode"
+            )
+        return self
+
+
+class SchedulePreviewRow(BaseModel):
+    sequence: int
+    due_date: date
+    due_amount: int
+    paid_amount: int = 0
+
+
+class ReschedulePreview(BaseModel):
+    """Old remaining schedule vs. proposed replacement — nothing is written."""
+
+    remaining_balance: int
+    current: list[SchedulePreviewRow]
+    proposed: list[SchedulePreviewRow]
+    current_total: int
+    proposed_total: int
+    current_end_date: date | None = None
+    proposed_end_date: date | None = None
+
+
+class ScheduleRevisionResponse(BaseModel):
+    id: str
+    loan_id: str
+    version: int
+    reason: str
+    effective_from: date
+    created_by: str
+    created_by_name: str = ""
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

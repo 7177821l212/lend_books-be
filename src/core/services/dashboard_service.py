@@ -81,6 +81,8 @@ class DashboardService:
             await self.session.execute(
                 select(func.coalesce(func.sum(Installment.paid_amount), 0))
                 .join(Loan, Loan.id == Installment.loan_id)
+                # No `is_active` filter — see note in customer_repository: this
+                # is collected cash, and replaced rows keep the money paid on them.
                 .where(Loan.status == LoanStatus.ACTIVE.value)
             )
         ).scalar_one()
@@ -125,6 +127,7 @@ class DashboardService:
                 .join(Installment, Installment.loan_id == Loan.id)
                 .where(
                     Loan.status == LoanStatus.ACTIVE.value,
+                    Installment.is_active.is_(True),
                     Installment.status.in_(["overdue", "missed"]),
                 )
             )

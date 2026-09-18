@@ -34,6 +34,13 @@ class MissedRequest(BaseModel):
     notes: str | None = Field(default=None, max_length=500)
 
 
+class PaymentAllocationResponse(BaseModel):
+    installment_id: str
+    sequence: int
+    due_date: date
+    amount: int
+
+
 class PaymentResponse(BaseModel):
     id: str
     loan_id: str
@@ -46,6 +53,7 @@ class PaymentResponse(BaseModel):
     notes: str | None = None
     proof_photo_url: str | None = None
     collected_at: datetime
+    allocations: list[PaymentAllocationResponse] = []
 
     model_config = {"from_attributes": True}
 
