@@ -19,13 +19,13 @@ from src.constants.enums import (
 class LoanCreate(BaseModel):
     """A new loan.
 
-    BALANCE loans need only the money terms: the
-    principal, the interest and the day it was given. They carry no installment
-    schedule, so `total_installments`, `repayment_frequency` and
-    `frequency_meta` do not apply and are rejected if sent.
+    BALANCE loans carry no installment schedule — no dated rows, no allocation.
+    `total_installments` is still accepted and is used only to derive the
+    expected per-visit amount (repayable ÷ installments) shown as guidance; the
+    customer may pay any amount on any day regardless.
 
-    SCHEDULE loans keep the original behaviour and still require
-    `total_installments`.
+    SCHEDULE loans keep the original behaviour, where those installments are
+    real dated rows that collections are allocated against.
     """
 
     customer_id: str
@@ -39,7 +39,7 @@ class LoanCreate(BaseModel):
     collection_mode: CollectionMode = CollectionMode.SCHEDULE
     start_date: date
 
-    # SCHEDULE only
+    # Guidance on a BALANCE loan; the actual dated schedule on a SCHEDULE loan.
     repayment_frequency: RepaymentFrequency = RepaymentFrequency.DAILY
     frequency_meta: dict[str, Any] | None = None
     total_installments: int | None = Field(default=None, gt=0, le=10_000)
@@ -48,13 +48,8 @@ class LoanCreate(BaseModel):
     def validate_terms(self) -> "LoanCreate":
         if self.interest_type is InterestType.PCT and not 0 <= self.interest_value <= 100:
             raise ValueError("percentage interest must be between 0 and 100")
-        if self.collection_mode is CollectionMode.SCHEDULE:
-            if self.total_installments is None:
-                raise ValueError("schedule loans require 'total_installments'")
-        elif self.total_installments is not None:
-            raise ValueError(
-                "balance loans keep no schedule; omit 'total_installments'"
-            )
+        if self.collection_mode is CollectionMode.SCHEDULE and self.total_installments is None:
+            raise ValueError("schedule loans require 'total_installments'")
         return self
 
 
@@ -89,6 +84,11 @@ class LoanSummary(BaseModel):
     profit: int
 
     collection_mode: CollectionMode
+    # Position among this customer's loans, oldest first — "Loan 1" was given
+    # first. Lets a collector tell two live loans for one customer apart.
+    loan_number: int = 1
+    # Visits where the collector called and collected nothing.
+    missed_count: int = 0
     repayment_frequency: RepaymentFrequency
     total_installments: int | None = None
     installment_amount: int | None = None  # base per-installment amount (schedule only)

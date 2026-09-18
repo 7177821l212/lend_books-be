@@ -41,10 +41,25 @@ class CollectRequest(BaseModel):
 
 
 class MissedRequest(BaseModel):
+    """A visit where nothing was collected.
+
+    SCHEDULE loans attach it to the installment that was missed. BALANCE loans
+    have no installments, so it is recorded against the loan and the day —
+    `schedule_id` is omitted and `missed_on` says which day it was.
+    """
+
     loan_id: str
-    schedule_id: str
+    schedule_id: str | None = None
+    missed_on: date | None = None
     reason: str = Field(min_length=1, max_length=255)
     notes: str | None = Field(default=None, max_length=500)
+
+    @field_validator("missed_on")
+    @classmethod
+    def missed_visit_cannot_be_in_the_future(cls, value: date | None) -> date | None:
+        if value is not None and value > business_today():
+            raise ValueError("a missed visit cannot be in the future")
+        return value
 
 
 class PaymentAllocationResponse(BaseModel):
@@ -86,6 +101,11 @@ class PickupItem(BaseModel):
     customer_phone: str
     customer_location: str | None = None
     collection_mode: CollectionMode = CollectionMode.SCHEDULE
+    # Which of this customer's loans this is, and when it was given — without
+    # these, two live loans for one customer are indistinguishable on the round.
+    loan_number: int = 1
+    start_date: date | None = None
+    missed_count: int = 0
     schedule_id: str | None = None
     sequence: int | None = None
     due_date: date | None = None

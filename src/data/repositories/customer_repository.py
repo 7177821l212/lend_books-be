@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.constants.enums import LoanStatus
 from src.data.models.postgres.customer import Customer
-from src.data.models.postgres.installment import Installment
+from src.data.models.postgres.payment import Payment
 from src.data.models.postgres.loan import Loan
 
 
@@ -60,15 +60,19 @@ class CustomerRepository:
 
         # Subquery: sum of paid across installments of active loans for this customer
         paid_sq = (
-            select(func.coalesce(func.sum(Installment.paid_amount), 0))
-            .select_from(Installment)
-            .join(Loan, Loan.id == Installment.loan_id)
-            # Deliberately unfiltered by `is_active`. `repayable_sq` is the full
-            # contracted amount, which still includes the rupees paid on a row a
-            # reschedule later replaced. Dropping those rows here would leave that
-            # money in the repayable side but not the paid side, OVERSTATING the
-            # balance by exactly the partial amount.
-            .where(Loan.customer_id == Customer.id, Loan.status == LoanStatus.ACTIVE.value)
+            select(func.coalesce(func.sum(Payment.amount), 0))
+            .select_from(Payment)
+            .join(Loan, Loan.id == Payment.loan_id)
+            # Cash comes from the PAYMENTS ledger, not from installment rows. A balance
+            # loan has no installments at all, so summing `Installment.paid_amount` made
+            # every rupee collected on one invisible here and overstated the balance by
+            # exactly that amount. The ledger is correct for both models: on a schedule
+            # loan the allocations sum back to the same figure.
+            .where(
+                Loan.customer_id == Customer.id,
+                Loan.status == LoanStatus.ACTIVE.value,
+                Payment.is_missed.is_(False),
+            )
             .correlate(Customer)
             .scalar_subquery()
         )

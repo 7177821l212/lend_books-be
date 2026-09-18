@@ -5,7 +5,7 @@ from __future__ import annotations
 import calendar
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -21,6 +21,7 @@ from src.core.exceptions.base import (
     ConflictError,
     ForbiddenError,
     NotFoundError,
+    ValidationError,
 )
 from src.data.models.postgres.customer import Customer
 from src.data.models.postgres.installment import Installment
@@ -166,10 +167,10 @@ class PaymentService:
             raise ConflictError(f"loan is {loan.status}; cannot mark missed")
 
         if loan.collection_mode == CollectionMode.BALANCE.value:
-            raise ConflictError(
-                "this loan has no schedule, so there is no visit to mark missed"
-            )
+            return await self._mark_missed_on_balance(current_user, loan, body)
 
+        if body.schedule_id is None:
+            raise ValidationError("schedule loans require 'schedule_id'")
         installment = await self.session.get(Installment, body.schedule_id)
         # A replaced row keeps its old PENDING/PARTIAL status, so without the
         # `is_active` check a collector working from a stale pickup list could
@@ -218,6 +219,32 @@ class PaymentService:
         self.session.add(payment)
         await self.session.flush()
         # A missed visit moves no cash, so it carries no allocations.
+        return self._payment_response(payment, [])
+
+    async def _mark_missed_on_balance(
+        self, current_user: dict, loan: Loan, body: MissedRequest
+    ) -> PaymentResponse:
+        """Record a day the collector called and collected nothing.
+
+        A balance loan has no installments, so there is no row to flag and
+        nothing to carry forward — the amount still owed is unchanged either
+        way. The entry exists so the reason is on the record and the gap in the
+        collection history is explained rather than silent.
+        """
+        payment = Payment(
+            loan_id=loan.id,
+            schedule_id=None,
+            collector_id=current_user["sub"],
+            is_missed=True,
+            missed_reason=body.reason.strip(),
+            amount=0,
+            mode=None,
+            notes=body.notes,
+        )
+        if body.missed_on is not None:
+            payment.collected_at = business_noon_utc(body.missed_on)
+        self.session.add(payment)
+        await self.session.flush()
         return self._payment_response(payment, [])
 
     # ------------------------------------------------------------------
@@ -300,9 +327,13 @@ class PaymentService:
 
         pickups: list[PickupItem] = []
         for inst, loan, cust in rows:
+            loan_number, missed_count = await self._loan_identity(loan)
             pickups.append(
                 PickupItem(
                     loan_id=loan.id,
+                    loan_number=loan_number,
+                    start_date=loan.start_date,
+                    missed_count=missed_count,
                     customer_id=cust.id,
                     customer_name=cust.name,
                     customer_phone=cust.phone,
@@ -345,6 +376,27 @@ class PaymentService:
     # Internals
     # ------------------------------------------------------------------
 
+    async def _loan_identity(self, loan: Loan) -> tuple[int, int]:
+        """(loan_number, missed_count) — see LoanService._loan_identity."""
+        number = await self.session.execute(
+            select(func.count(Loan.id)).where(
+                Loan.customer_id == loan.customer_id,
+                or_(
+                    Loan.start_date < loan.start_date,
+                    and_(
+                        Loan.start_date == loan.start_date,
+                        Loan.created_at <= loan.created_at,
+                    ),
+                ),
+            )
+        )
+        missed = await self.session.execute(
+            select(func.count(Payment.id)).where(
+                Payment.loan_id == loan.id, Payment.is_missed.is_(True)
+            )
+        )
+        return int(number.scalar_one() or 1), int(missed.scalar_one() or 0)
+
     async def _balance_pickups(self, collector_id: str) -> list[PickupItem]:
         """Every active balance loan assigned to this collector.
 
@@ -372,18 +424,24 @@ class PaymentService:
             )
             .order_by(Customer.name)
         )
-        return [
-            PickupItem(
-                loan_id=loan.id,
-                customer_id=customer.id,
-                customer_name=customer.name,
-                customer_phone=customer.phone,
-                customer_location=customer.location,
-                collection_mode=CollectionMode.BALANCE,
-                due_amount=max(0, loan.repayable - int(collected or 0)),
+        pickups: list[PickupItem] = []
+        for loan, customer, collected in result.all():
+            loan_number, missed_count = await self._loan_identity(loan)
+            pickups.append(
+                PickupItem(
+                    loan_id=loan.id,
+                    customer_id=customer.id,
+                    customer_name=customer.name,
+                    customer_phone=customer.phone,
+                    customer_location=customer.location,
+                    collection_mode=CollectionMode.BALANCE,
+                    loan_number=loan_number,
+                    start_date=loan.start_date,
+                    missed_count=missed_count,
+                    due_amount=max(0, loan.repayable - int(collected or 0)),
+                )
             )
-            for loan, customer, collected in result.all()
-        ]
+        return pickups
 
 
     async def _get_loan_with_rbac(self, current_user: dict, loan_id: str) -> Loan:

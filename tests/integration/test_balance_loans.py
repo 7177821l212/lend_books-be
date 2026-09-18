@@ -110,31 +110,6 @@ class TestRegistration:
         assert loan["total_installments"] is None
         assert loan["installment_amount"] is None
 
-    async def test_installment_count_is_rejected_for_a_balance_loan(
-        self, client: AsyncClient, db_session: AsyncSession
-    ) -> None:
-        investor = await _make_user(db_session, "binv2@x.com")
-        collector = await _make_user(db_session, "bcol2@x.com", UserRole.COLLECTOR)
-        customer = await _make_customer(db_session, "8000000002")
-        headers = await _login(client, investor)
-        res = await client.post(
-            "/api/v1/loans",
-            headers=headers,
-            json={
-                "customer_id": customer.id,
-                "collector_id": collector.id,
-                "principal": 20_000,
-                "interest_type": "pct",
-                "interest_value": 10,
-                "lending_model": "model_b",
-                "collection_mode": "balance",
-                "total_installments": 10,
-                "start_date": date.today().isoformat(),
-            },
-        )
-        assert res.status_code == 422
-        assert "keep no schedule" in res.text
-
 
 class TestFlexibleCollection:
     async def test_the_worked_example_from_the_requirement(
@@ -280,18 +255,11 @@ class TestWorklistAndScheduleOperations:
         ).json()
         assert all(p["loan_id"] != loan["id"] for p in my_day["pickups"])
 
-    async def test_schedule_only_operations_are_refused(
+    async def test_rescheduling_is_refused(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
-        inv_headers, col_headers, loan = await _setup(client, db_session, "11")
-        missed = await client.post(
-            "/api/v1/payments/missed",
-            headers=col_headers,
-            json={"loan_id": loan["id"], "schedule_id": "any", "reason": "shut"},
-        )
-        assert missed.status_code == 409
-        assert "no schedule" in missed.text
-
+        """There is no schedule to revise — the customer pays what they can."""
+        inv_headers, _, loan = await _setup(client, db_session, "11")
         reschedule = await client.post(
             f"/api/v1/loans/{loan['id']}/reschedule",
             headers=inv_headers,
@@ -299,3 +267,206 @@ class TestWorklistAndScheduleOperations:
         )
         assert reschedule.status_code == 409
         assert "no schedule" in reschedule.text
+
+
+class TestExpectedPaceAndMissedVisits:
+    """The installment count is a GUIDE on a balance loan, never a rule."""
+
+    async def _loan_with_installments(
+        self, client: AsyncClient, db: AsyncSession, suffix: str, installments: int
+    ) -> tuple[dict[str, str], dict[str, str], dict[str, Any]]:
+        investor = await _make_user(db, f"pinv{suffix}@x.com")
+        collector = await _make_user(db, f"pcol{suffix}@x.com", UserRole.COLLECTOR)
+        customer = await _make_customer(db, f"7{suffix.rjust(9, '0')}")
+        inv = await _login(client, investor)
+        col = await _login(client, collector)
+        res = await client.post(
+            "/api/v1/loans",
+            headers=inv,
+            json={
+                "customer_id": customer.id,
+                "collector_id": collector.id,
+                "principal": 20_000,
+                "interest_type": "pct",
+                "interest_value": 10,
+                "lending_model": "model_b",
+                "collection_mode": "balance",
+                "total_installments": installments,
+                "start_date": date.today().isoformat(),
+            },
+        )
+        assert res.status_code == 201, res.text
+        return inv, col, res.json()
+
+    async def test_the_per_visit_amount_is_derived_but_not_enforced(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        inv, col, loan = await self._loan_with_installments(client, db_session, "1", 20)
+        assert loan["repayable"] == 22_000
+        assert loan["total_installments"] == 20
+        assert loan["installment_amount"] == 1_100, "₹22,000 over 20 visits"
+        assert loan["installments"] == [], "still no schedule rows"
+
+        # The customer pays nothing like ₹1,100 and every payment is accepted.
+        for amount in (1_000, 500, 700):
+            await _collect(client, col, loan["id"], amount)
+        detail = (
+            await client.get(f"/api/v1/loans/{loan['id']}", headers=inv)
+        ).json()
+        assert detail["repaid"] == 2_200
+        assert detail["outstanding"] == 19_800
+        assert detail["installment_amount"] == 1_100, "the guide does not move"
+
+    async def test_a_day_can_be_marked_missed_with_a_reason(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Day 1 ₹1,000 · day 2 ₹500 · day 3 missed · day 4 ₹700."""
+        inv, col, loan = await self._loan_with_installments(client, db_session, "2", 20)
+        today = date.today()
+        await _collect(client, col, loan["id"], 1_000, on=today - timedelta(days=3))
+        await _collect(client, col, loan["id"], 500, on=today - timedelta(days=2))
+
+        missed = await client.post(
+            "/api/v1/payments/missed",
+            headers=col,
+            json={
+                "loan_id": loan["id"],
+                "missed_on": (today - timedelta(days=1)).isoformat(),
+                "reason": "Shop closed",
+            },
+        )
+        assert missed.status_code in (200, 201), missed.text
+        assert missed.json()["is_missed"] is True
+        assert missed.json()["amount"] == 0
+
+        await _collect(client, col, loan["id"], 700, on=today)
+
+        detail = (await client.get(f"/api/v1/loans/{loan['id']}", headers=inv)).json()
+        assert detail["repaid"] == 2_200, "a missed day moves no money"
+        assert detail["outstanding"] == 19_800
+        assert detail["total_installments"] == 20, "and does not extend anything"
+
+        history = (
+            await client.get(
+                f"/api/v1/payments/history?loan_id={loan['id']}", headers=inv
+            )
+        ).json()["items"]
+        assert [(p["amount"], p["is_missed"]) for p in history] == [
+            (700, False),
+            (0, True),
+            (500, False),
+            (1_000, False),
+        ], "the gap is explained, not silent"
+        assert history[1]["missed_reason"] == "Shop closed"
+
+    async def test_installments_remain_optional_on_a_balance_loan(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        _, _, loan = await _setup(client, db_session, "30")
+        assert loan["total_installments"] is None
+        assert loan["installment_amount"] is None
+
+
+class TestTellingTwoLoansApart:
+    """One customer, two live loans — the round must distinguish them."""
+
+    async def test_pickups_carry_loan_number_start_date_and_missed_count(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        investor = await _make_user(db_session, "minv@x.com")
+        collector = await _make_user(db_session, "mcol@x.com", UserRole.COLLECTOR)
+        customer = await _make_customer(db_session, "7900000001")
+        inv = await _login(client, investor)
+        col = await _login(client, collector)
+        today = date.today()
+
+        async def make(principal: int, start: date) -> dict[str, Any]:
+            res = await client.post(
+                "/api/v1/loans",
+                headers=inv,
+                json={
+                    "customer_id": customer.id,
+                    "collector_id": collector.id,
+                    "principal": principal,
+                    "interest_type": "pct",
+                    "interest_value": 10,
+                    "lending_model": "model_b",
+                    "collection_mode": "balance",
+                    "total_installments": 10,
+                    "start_date": start.isoformat(),
+                },
+            )
+            assert res.status_code == 201, res.text
+            return res.json()
+
+        first = await make(10_000, today - timedelta(days=30))
+        second = await make(20_000, today - timedelta(days=5))
+
+        # Two missed visits on the older loan only.
+        for days_ago in (3, 2):
+            res = await client.post(
+                "/api/v1/payments/missed",
+                headers=col,
+                json={
+                    "loan_id": first["id"],
+                    "missed_on": (today - timedelta(days=days_ago)).isoformat(),
+                    "reason": "Shop closed",
+                },
+            )
+            assert res.status_code in (200, 201), res.text
+
+        my_day = (await client.get("/api/v1/payments/my-day", headers=col)).json()
+        by_loan = {p["loan_id"]: p for p in my_day["pickups"]}
+
+        older = by_loan[first["id"]]
+        newer = by_loan[second["id"]]
+        assert older["loan_number"] == 1, "the loan given first is Loan 1"
+        assert newer["loan_number"] == 2
+        assert older["start_date"] == (today - timedelta(days=30)).isoformat()
+        assert newer["start_date"] == (today - timedelta(days=5)).isoformat()
+        assert older["missed_count"] == 2
+        assert newer["missed_count"] == 0
+
+        # The same identity is on the loan itself, not just the round.
+        detail = (
+            await client.get(f"/api/v1/loans/{first['id']}", headers=inv)
+        ).json()
+        assert detail["loan_number"] == 1
+        assert detail["missed_count"] == 2
+
+
+class TestBalanceLoansAreVisibleEverywhere:
+    """Cash on a balance loan must reach every surface, not just the loan.
+
+    These figures were computed by summing `Installment.paid_amount`. A balance
+    loan has no installments, so its collections were invisible and the balance
+    was overstated by exactly what had been collected.
+    """
+
+    async def test_dashboard_and_customer_totals_match_the_loans(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        inv, col, loan = await _setup(client, db_session, "40")
+        await _collect(client, col, loan["id"], 2_200)
+
+        loans = (
+            await client.get("/api/v1/loans?status=active&page_size=50", headers=inv)
+        ).json()["items"]
+        truth = sum(item["outstanding"] for item in loans)
+        assert truth == 19_800, "one active balance loan, ₹2,200 collected"
+
+        kpis = (await client.get("/api/v1/dashboard", headers=inv)).json()["kpis"]
+        assert kpis["outstanding"] == truth, "dashboard must see balance collections"
+
+        customer = (
+            await client.get(
+                f"/api/v1/customers/{loan['customer_id']}", headers=inv
+            )
+        ).json()
+        assert customer["total_outstanding"] == truth, "customer detail must too"
+
+        listed = (
+            await client.get("/api/v1/customers?page_size=100", headers=inv)
+        ).json()["items"]
+        row = next(c for c in listed if c["id"] == loan["customer_id"])
+        assert row["total_outstanding"] == truth, "and the customer list"
