@@ -231,6 +231,40 @@ class PaymentService:
         way. The entry exists so the reason is on the record and the gap in the
         collection history is explained rather than silent.
         """
+        day = body.missed_on or business_today()
+        day_start, day_end = utc_day_bounds(day)
+
+        # The schedule path refuses to call a visit missed when money was taken
+        # on it; a balance loan needs the same rule, or the same day shows both
+        # a receipt and an absence.
+        collected = await self.session.execute(
+            select(func.coalesce(func.sum(Payment.amount), 0)).where(
+                Payment.loan_id == loan.id,
+                Payment.is_missed.is_(False),
+                Payment.collected_at >= day_start,
+                Payment.collected_at < day_end,
+            )
+        )
+        collected_that_day = int(collected.scalar_one() or 0)
+        if collected_that_day > 0:
+            raise ConflictError(
+                f"₹{collected_that_day:,} was already collected on {day}; "
+                "record a short payment instead of a missed visit"
+            )
+
+        # Without this a double tap — or a retry on a flaky connection — writes
+        # two rows and the loan reports two missed visits for one absence.
+        already = await self.session.execute(
+            select(func.count(Payment.id)).where(
+                Payment.loan_id == loan.id,
+                Payment.is_missed.is_(True),
+                Payment.collected_at >= day_start,
+                Payment.collected_at < day_end,
+            )
+        )
+        if int(already.scalar_one() or 0) > 0:
+            raise ConflictError(f"{day} is already recorded as a missed visit")
+
         payment = Payment(
             loan_id=loan.id,
             schedule_id=None,
@@ -241,8 +275,7 @@ class PaymentService:
             mode=None,
             notes=body.notes,
         )
-        if body.missed_on is not None:
-            payment.collected_at = business_noon_utc(body.missed_on)
+        payment.collected_at = business_noon_utc(day)
         self.session.add(payment)
         await self.session.flush()
         return self._payment_response(payment, [])
@@ -325,15 +358,15 @@ class PaymentService:
         )
         rows = result.all()
 
+        missed_counts = await self._missed_counts([loan.id for _, loan, _ in rows])
         pickups: list[PickupItem] = []
         for inst, loan, cust in rows:
-            loan_number, missed_count = await self._loan_identity(loan)
             pickups.append(
                 PickupItem(
                     loan_id=loan.id,
-                    loan_number=loan_number,
+                    loan_number=loan.loan_number,
                     start_date=loan.start_date,
-                    missed_count=missed_count,
+                    missed_count=missed_counts.get(loan.id, 0),
                     customer_id=cust.id,
                     customer_name=cust.name,
                     customer_phone=cust.phone,
@@ -376,26 +409,22 @@ class PaymentService:
     # Internals
     # ------------------------------------------------------------------
 
-    async def _loan_identity(self, loan: Loan) -> tuple[int, int]:
-        """(loan_number, missed_count) — see LoanService._loan_identity."""
-        number = await self.session.execute(
-            select(func.count(Loan.id)).where(
-                Loan.customer_id == loan.customer_id,
-                or_(
-                    Loan.start_date < loan.start_date,
-                    and_(
-                        Loan.start_date == loan.start_date,
-                        Loan.created_at <= loan.created_at,
-                    ),
-                ),
-            )
+    async def _missed_counts(self, loan_ids: list[str]) -> dict[str, int]:
+        """Missed-visit counts for many loans in ONE query.
+
+        This used to be two queries per pickup, and `my_day` loops over
+        installments rather than loans, so a loan with several overdue rows paid
+        for it several times — a collector with a long round issued hundreds of
+        extra round trips on their busiest screen.
+        """
+        if not loan_ids:
+            return {}
+        result = await self.session.execute(
+            select(Payment.loan_id, func.count(Payment.id))
+            .where(Payment.loan_id.in_(loan_ids), Payment.is_missed.is_(True))
+            .group_by(Payment.loan_id)
         )
-        missed = await self.session.execute(
-            select(func.count(Payment.id)).where(
-                Payment.loan_id == loan.id, Payment.is_missed.is_(True)
-            )
-        )
-        return int(number.scalar_one() or 1), int(missed.scalar_one() or 0)
+        return {loan_id: int(count) for loan_id, count in result.all()}
 
     async def _balance_pickups(self, collector_id: str) -> list[PickupItem]:
         """Every active balance loan assigned to this collector.
@@ -424,9 +453,10 @@ class PaymentService:
             )
             .order_by(Customer.name)
         )
+        rows = result.all()
+        missed_counts = await self._missed_counts([loan.id for loan, _, _ in rows])
         pickups: list[PickupItem] = []
-        for loan, customer, collected in result.all():
-            loan_number, missed_count = await self._loan_identity(loan)
+        for loan, customer, collected in rows:
             pickups.append(
                 PickupItem(
                     loan_id=loan.id,
@@ -435,9 +465,9 @@ class PaymentService:
                     customer_phone=customer.phone,
                     customer_location=customer.location,
                     collection_mode=CollectionMode.BALANCE,
-                    loan_number=loan_number,
+                    loan_number=loan.loan_number,
                     start_date=loan.start_date,
-                    missed_count=missed_count,
+                    missed_count=missed_counts.get(loan.id, 0),
                     due_amount=max(0, loan.repayable - int(collected or 0)),
                 )
             )

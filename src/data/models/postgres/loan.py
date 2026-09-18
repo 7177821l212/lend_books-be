@@ -47,6 +47,13 @@ class Loan(Base, TimestampMixin):
         String(20), default=CollectionMode.SCHEDULE.value, nullable=False, index=True
     )
 
+    # Which of this customer's loans this is, assigned once at creation. STORED
+    # rather than derived: a rank computed from start_date would silently
+    # renumber every earlier loan the moment a back-dated one was registered,
+    # and a collector who wrote "Loan 2" in their notebook would find a
+    # different loan under that label the next day.
+    loan_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
     # Schedule — unused by BALANCE loans, which is why they are nullable.
     repayment_frequency: Mapped[str] = mapped_column(
         String(20), default=RepaymentFrequency.DAILY.value, nullable=False

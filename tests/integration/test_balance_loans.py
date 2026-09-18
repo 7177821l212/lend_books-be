@@ -470,3 +470,97 @@ class TestBalanceLoansAreVisibleEverywhere:
         ).json()["items"]
         row = next(c for c in listed if c["id"] == loan["customer_id"])
         assert row["total_outstanding"] == truth, "and the customer list"
+
+
+class TestMissedVisitGuards:
+    async def test_the_same_day_cannot_be_missed_twice(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """A double tap, or a retry on a flaky connection, is one absence."""
+        _, col, loan = await _setup(client, db_session, "50")
+        body = {"loan_id": loan["id"], "reason": "Shop closed"}
+        first = await client.post("/api/v1/payments/missed", headers=col, json=body)
+        assert first.status_code in (200, 201), first.text
+        second = await client.post("/api/v1/payments/missed", headers=col, json=body)
+        assert second.status_code == 409
+        assert "already recorded" in second.text
+
+        detail = (
+            await client.get(f"/api/v1/loans/{loan['id']}", headers=col)
+        ).json()
+        assert detail["missed_count"] == 1
+
+    async def test_a_day_that_took_money_cannot_also_be_missed(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        _, col, loan = await _setup(client, db_session, "51")
+        await _collect(client, col, loan["id"], 500)
+        res = await client.post(
+            "/api/v1/payments/missed",
+            headers=col,
+            json={"loan_id": loan["id"], "reason": "Shop closed"},
+        )
+        assert res.status_code == 409
+        assert "500" in res.text
+
+    async def test_different_days_can_each_be_missed(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        _, col, loan = await _setup(client, db_session, "52")
+        today = date.today()
+        for days_ago in (2, 1):
+            res = await client.post(
+                "/api/v1/payments/missed",
+                headers=col,
+                json={
+                    "loan_id": loan["id"],
+                    "missed_on": (today - timedelta(days=days_ago)).isoformat(),
+                    "reason": "Shop closed",
+                },
+            )
+            assert res.status_code in (200, 201), res.text
+        detail = (await client.get(f"/api/v1/loans/{loan['id']}", headers=col)).json()
+        assert detail["missed_count"] == 2
+
+
+class TestLoanNumberIsStable:
+    async def test_a_back_dated_loan_does_not_renumber_the_others(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """The collector's notebook says "Loan 2" — it must stay that loan."""
+        investor = await _make_user(db_session, "sinv@x.com")
+        collector = await _make_user(db_session, "scol@x.com", UserRole.COLLECTOR)
+        customer = await _make_customer(db_session, "6900000001")
+        inv = await _login(client, investor)
+        today = date.today()
+
+        async def make(start: date) -> dict[str, Any]:
+            res = await client.post(
+                "/api/v1/loans",
+                headers=inv,
+                json={
+                    "customer_id": customer.id,
+                    "collector_id": collector.id,
+                    "principal": 10_000,
+                    "interest_type": "pct",
+                    "interest_value": 10,
+                    "lending_model": "model_b",
+                    "collection_mode": "balance",
+                    "start_date": start.isoformat(),
+                },
+            )
+            assert res.status_code == 201, res.text
+            return res.json()
+
+        first = await make(today - timedelta(days=20))
+        second = await make(today - timedelta(days=10))
+        assert first["loan_number"] == 1
+        assert second["loan_number"] == 2
+
+        # Register a loan dated BETWEEN the two.
+        await make(today - timedelta(days=15))
+
+        still_second = (
+            await client.get(f"/api/v1/loans/{second['id']}", headers=inv)
+        ).json()
+        assert still_second["loan_number"] == 2, "numbers are assigned once, not ranked"

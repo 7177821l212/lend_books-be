@@ -90,7 +90,7 @@ class LoanService:
                 # Guidance only: what a visit would collect if the customer kept
                 # to an even pace. No rows are created and nothing enforces it —
                 # the customer may pay any amount on any day.
-                installment_base = terms.repayable // body.total_installments
+                installment_base = max(1, terms.repayable // body.total_installments)
             if not is_balance:
                 installment_base, _installment_max, schedule_rows = generate_schedule(
                     start_date=body.start_date,
@@ -102,7 +102,13 @@ class LoanService:
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
 
+        next_number = await self.session.execute(
+            select(func.coalesce(func.max(Loan.loan_number), 0) + 1).where(
+                Loan.customer_id == customer.id
+            )
+        )
         loan = Loan(
+            loan_number=int(next_number.scalar_one()),
             customer_id=customer.id,
             collector_id=collector.id,
             principal=terms.principal,
@@ -440,7 +446,7 @@ class LoanService:
             outstanding, repaid, paid_count, overdue_count = await self._balance_aggregates(loan)
         else:
             outstanding, repaid, paid_count, overdue_count = await self._aggregates(loan.id)
-        loan_number, missed_count = await self._loan_identity(loan)
+        missed_count = await self._missed_count(loan.id)
         repaid_pct = round((repaid / loan.repayable) * 100, 1) if loan.repayable else 0
 
         # installment_amount is the BASE (floor) amount;
@@ -468,7 +474,7 @@ class LoanService:
             repayable=loan.repayable,
             profit=loan.profit,
             collection_mode=loan.collection_mode,
-            loan_number=loan_number,
+            loan_number=loan.loan_number,
             missed_count=missed_count,
             repayment_frequency=loan.repayment_frequency,
             total_installments=loan.total_installments,
@@ -495,29 +501,14 @@ class LoanService:
             installments=[InstallmentResponse.model_validate(i) for i in installments],
         )
 
-    async def _loan_identity(self, loan: Loan) -> tuple[int, int]:
-        """Return (loan_number, missed_count) for this loan.
-
-        `loan_number` is the loan's position among that customer's loans, oldest
-        first — "Loan 1" is the one given first. Without it a customer with two
-        live loans shows two identical rows on the collector's round with no way
-        to tell which is which.
-        """
-        number = await self.session.execute(
-            select(func.count(Loan.id)).where(
-                Loan.customer_id == loan.customer_id,
-                or_(
-                    Loan.start_date < loan.start_date,
-                    and_(Loan.start_date == loan.start_date, Loan.created_at <= loan.created_at),
-                ),
-            )
-        )
-        missed = await self.session.execute(
+    async def _missed_count(self, loan_id: str) -> int:
+        """Visits where the collector called and collected nothing."""
+        result = await self.session.execute(
             select(func.count(Payment.id)).where(
-                Payment.loan_id == loan.id, Payment.is_missed.is_(True)
+                Payment.loan_id == loan_id, Payment.is_missed.is_(True)
             )
         )
-        return int(number.scalar_one() or 1), int(missed.scalar_one() or 0)
+        return int(result.scalar_one() or 0)
 
     async def _balance_aggregates(self, loan: Loan) -> tuple[int, int, int, int]:
         """Figures for a BALANCE loan, taken straight from the payment ledger.
