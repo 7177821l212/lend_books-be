@@ -63,6 +63,11 @@ class CustomerRepository:
             select(func.coalesce(func.sum(Installment.paid_amount), 0))
             .select_from(Installment)
             .join(Loan, Loan.id == Installment.loan_id)
+            # Deliberately unfiltered by `is_active`. `repayable_sq` is the full
+            # contracted amount, which still includes the rupees paid on a row a
+            # reschedule later replaced. Dropping those rows here would leave that
+            # money in the repayable side but not the paid side, OVERSTATING the
+            # balance by exactly the partial amount.
             .where(Loan.customer_id == Customer.id, Loan.status == LoanStatus.ACTIVE.value)
             .correlate(Customer)
             .scalar_subquery()

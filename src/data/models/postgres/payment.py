@@ -5,7 +5,6 @@ from datetime import datetime
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from src.constants.enums import PaymentMode
 from src.data.models.postgres.base import Base, generate_uuid
 
 
@@ -35,3 +34,6 @@ class Payment(Base):
 
     loan = relationship("Loan", back_populates="payments")
     collector = relationship("User", foreign_keys=[collector_id])
+    allocations = relationship(
+        "PaymentAllocation", back_populates="payment", cascade="all, delete-orphan"
+    )

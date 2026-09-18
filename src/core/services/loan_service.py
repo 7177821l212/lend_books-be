@@ -9,11 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.constants.enums import (
+    OPEN_INSTALLMENT_STATUSES,
     InstallmentStatus,
     InterestType,
     LendingModel,
     LoanStatus,
     RepaymentFrequency,
+    RescheduleMode,
     UserRole,
 )
 from src.core.exceptions.base import (
@@ -22,10 +24,16 @@ from src.core.exceptions.base import (
     NotFoundError,
     ValidationError,
 )
-from src.core.services.loan_terms import compute_terms, generate_schedule
+from src.core.services.loan_terms import (
+    ScheduleRow,
+    build_reschedule_plan,
+    compute_terms,
+    generate_schedule,
+)
 from src.data.models.postgres.customer import Customer
 from src.data.models.postgres.installment import Installment
 from src.data.models.postgres.loan import Loan
+from src.data.models.postgres.schedule_revision import ScheduleRevision
 from src.data.models.postgres.user import User
 from src.schemas.common import PaginatedResponse
 from src.schemas.loan import (
@@ -35,6 +43,10 @@ from src.schemas.loan import (
     LoanCreate,
     LoanDetail,
     LoanSummary,
+    ReschedulePreview,
+    RescheduleRequest,
+    SchedulePreviewRow,
+    ScheduleRevisionResponse,
 )
 
 
@@ -197,9 +209,184 @@ class LoanService:
         loan = await self._fetch_loan(loan.id)
         return await self._to_detail(loan)
 
+    async def reschedule(
+        self, current_user: dict, loan_id: str, body: RescheduleRequest
+    ) -> LoanDetail:
+        """Replace only unpaid active rows; payment history remains immutable."""
+        loan, open_rows, _remaining, plan = await self._plan_reschedule(
+            current_user, loan_id, body
+        )
+
+        next_version = max(row.schedule_version for row in loan.installments) + 1
+        self.session.add(
+            ScheduleRevision(
+                loan_id=loan.id,
+                created_by=current_user["sub"],
+                version=next_version,
+                reason=body.reason.strip(),
+                effective_from=plan[0].due_date,
+            )
+        )
+
+        now = datetime.now(UTC)
+        for row in open_rows:
+            row.is_active = False
+            row.replaced_at = now
+
+        # New rows continue the numbering after every sequence the loan has ever
+        # used, so a replaced row and its replacement never share a number.
+        next_sequence = max(row.sequence for row in loan.installments) + 1
+        for offset, row in enumerate(plan):
+            self.session.add(
+                Installment(
+                    loan_id=loan.id,
+                    sequence=next_sequence + offset,
+                    due_date=row.due_date,
+                    due_amount=row.due_amount,
+                    paid_amount=0,
+                    status=InstallmentStatus.PENDING.value,
+                    is_active=True,
+                    schedule_version=next_version,
+                )
+            )
+
+        # Everything still active at this point is settled history (paid or
+        # missed); the open rows were just deactivated above.
+        settled_rows = sum(1 for row in loan.installments if row.is_active)
+        loan.total_installments = settled_rows + len(plan)
+        await self.session.flush()
+        return await self.get(current_user, loan.id)
+
+    async def preview_reschedule(
+        self, current_user: dict, loan_id: str, body: RescheduleRequest
+    ) -> ReschedulePreview:
+        """Show old remaining schedule vs. proposed plan without writing anything."""
+        _, open_rows, remaining, plan = await self._plan_reschedule(
+            current_user, loan_id, body
+        )
+        current = [
+            SchedulePreviewRow(
+                sequence=row.sequence,
+                due_date=row.due_date,
+                due_amount=row.due_amount,
+                paid_amount=row.paid_amount,
+            )
+            for row in open_rows
+        ]
+        proposed = [
+            SchedulePreviewRow(
+                sequence=index + 1, due_date=row.due_date, due_amount=row.due_amount
+            )
+            for index, row in enumerate(plan)
+        ]
+        return ReschedulePreview(
+            remaining_balance=remaining,
+            current=current,
+            proposed=proposed,
+            current_total=sum(row.due_amount - row.paid_amount for row in open_rows),
+            proposed_total=sum(row.due_amount for row in plan),
+            current_end_date=current[-1].due_date if current else None,
+            proposed_end_date=proposed[-1].due_date if proposed else None,
+        )
+
+    async def list_revisions(
+        self, current_user: dict, loan_id: str
+    ) -> list[ScheduleRevisionResponse]:
+        """Audit trail of every approved replacement plan, newest first."""
+        loan = await self._fetch_loan(loan_id)
+        self._check_can_view(current_user, loan)
+        result = await self.session.execute(
+            select(ScheduleRevision, User.name)
+            .join(User, User.id == ScheduleRevision.created_by)
+            .where(ScheduleRevision.loan_id == loan_id)
+            .order_by(ScheduleRevision.version.desc())
+        )
+        return [
+            ScheduleRevisionResponse(
+                id=revision.id,
+                loan_id=revision.loan_id,
+                version=revision.version,
+                reason=revision.reason,
+                effective_from=revision.effective_from,
+                created_by=revision.created_by,
+                created_by_name=created_by_name or "",
+                created_at=revision.created_at,
+            )
+            for revision, created_by_name in result.all()
+        ]
+
+    async def _plan_reschedule(
+        self, current_user: dict, loan_id: str, body: RescheduleRequest
+    ) -> tuple[Loan, list[Installment], int, list[ScheduleRow]]:
+        """Shared validation for preview and commit.
+
+        Returns the loan, the rows that would be replaced, the balance those rows
+        still expect, and the replacement plan. Raises before any write happens.
+        """
+        self._require_investor(current_user)
+        # Lock the loan row first: without it two concurrent confirms both read
+        # the same open rows and each insert a full replacement plan, leaving two
+        # active plans and roughly double the outstanding balance. The unique
+        # index on (loan_id, version) is the second line of defence.
+        await self.session.execute(
+            select(Loan.id).where(Loan.id == loan_id).with_for_update()
+        )
+        loan = await self._fetch_loan(loan_id)
+        if loan.status != LoanStatus.ACTIVE.value:
+            raise ConflictError("only active loans can be rescheduled")
+
+        # MISSED rows are excluded deliberately: marking a visit missed already
+        # appended a replacement row carrying that money, so replacing the missed
+        # row too would reschedule the same rupees twice.
+        open_rows = sorted(
+            [
+                row
+                for row in loan.installments
+                if row.is_active and row.status in OPEN_INSTALLMENT_STATUSES
+            ],
+            key=lambda row: (row.due_date, row.sequence),
+        )
+        if not open_rows:
+            raise ConflictError("loan has no open installments to reschedule")
+        remaining = sum(row.due_amount - row.paid_amount for row in open_rows)
+
+        if body.mode is RescheduleMode.MANUAL:
+            plan = [
+                ScheduleRow(
+                    sequence=index + 1, due_date=row.due_date, due_amount=row.due_amount
+                )
+                for index, row in enumerate(body.installments)
+            ]
+            proposed_total = sum(row.due_amount for row in plan)
+            if proposed_total != remaining:
+                raise ValidationError(
+                    f"rescheduled total must equal the remaining balance ({remaining})"
+                )
+        else:
+            try:
+                plan = build_reschedule_plan(
+                    mode=body.mode.value,
+                    remaining=remaining,
+                    open_due_dates=[row.due_date for row in open_rows],
+                    first_due_date=body.start_date or open_rows[0].due_date,
+                    frequency=RepaymentFrequency(loan.repayment_frequency),
+                    frequency_meta=loan.frequency_meta,
+                    installment_amount=body.installment_amount,
+                )
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
+
+        if not plan:
+            raise ValidationError("the replacement plan is empty")
+        return loan, open_rows, remaining, plan
+
     # ---------------- Internals ----------------
 
     async def _fetch_loan(self, loan_id: str) -> Loan:
+        # `populate_existing` forces a re-read of a loan already in the identity
+        # map. Without it, a reschedule that has just inserted replacement rows
+        # would hand back the stale `installments` collection loaded earlier in
+        # the same request, and the new rows would be missing from the response.
         result = await self.session.execute(
             select(Loan)
             .where(Loan.id == loan_id)
@@ -208,6 +395,7 @@ class LoanService:
                 selectinload(Loan.collector),
                 selectinload(Loan.installments),
             )
+            .execution_options(populate_existing=True)
         )
         loan = result.scalar_one_or_none()
         if loan is None:
@@ -268,7 +456,10 @@ class LoanService:
 
     async def _to_detail(self, loan: Loan) -> LoanDetail:
         summary = await self._to_summary(loan)
-        installments = sorted(loan.installments, key=lambda i: i.sequence)
+        installments = sorted(
+            loan.installments,
+            key=lambda i: (i.due_date, i.sequence, i.schedule_version),
+        )
         return LoanDetail(
             **summary.model_dump(),
             installments=[InstallmentResponse.model_validate(i) for i in installments],
@@ -278,7 +469,15 @@ class LoanService:
         """Return (outstanding, repaid, paid_count, overdue_count) for a loan."""
         result = await self.session.execute(
             select(
-                func.coalesce(func.sum(Installment.paid_amount), 0).label("repaid"),
+                # A MISSED row was already compensated by an extra row appended
+                # to the end of the schedule, so counting it here would bill the
+                # same rupees twice.
+                func.coalesce(
+                    func.sum(Installment.due_amount - Installment.paid_amount).filter(
+                        Installment.status.in_(OPEN_INSTALLMENT_STATUSES)
+                    ),
+                    0,
+                ).label("outstanding"),
                 func.count(Installment.id)
                 .filter(Installment.status == InstallmentStatus.PAID.value)
                 .label("paid_count"),
@@ -290,13 +489,23 @@ class LoanService:
                     )
                 )
                 .label("overdue_count"),
-            ).where(Installment.loan_id == loan_id)
+            ).where(Installment.loan_id == loan_id, Installment.is_active.is_(True))
         )
         row = result.one()
-        repaid = int(row.repaid or 0)
-        # Outstanding = repayable - repaid (from loan)
-        loan = await self.session.get(Loan, loan_id)
-        outstanding = max(0, (loan.repayable if loan else 0) - repaid)
+        outstanding = max(0, int(row.outstanding or 0))
+
+        # `repaid` is CASH COLLECTED, counted directly rather than derived as
+        # `repayable - outstanding`. The derivation silently lost money whenever
+        # the schedule's total drifted from `repayable` — a visit paid ₹1,100
+        # and then marked missed reported ₹2,200 repaid instead of ₹3,300.
+        # Every row counts here, including MISSED rows and rows a reschedule
+        # replaced: they still hold cash the customer really handed over.
+        repaid_row = await self.session.execute(
+            select(func.coalesce(func.sum(Installment.paid_amount), 0)).where(
+                Installment.loan_id == loan_id
+            )
+        )
+        repaid = int(repaid_row.scalar_one() or 0)
         return (
             outstanding,
             repaid,
