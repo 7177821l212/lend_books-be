@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from src.constants.enums import (
     OPEN_INSTALLMENT_STATUSES,
+    CollectionMode,
     InstallmentStatus,
     InterestType,
     LendingModel,
@@ -33,6 +34,7 @@ from src.core.services.loan_terms import (
 from src.data.models.postgres.customer import Customer
 from src.data.models.postgres.installment import Installment
 from src.data.models.postgres.loan import Loan
+from src.data.models.postgres.payment import Payment
 from src.data.models.postgres.schedule_revision import ScheduleRevision
 from src.data.models.postgres.user import User
 from src.schemas.common import PaginatedResponse
@@ -71,6 +73,7 @@ class LoanService:
         if not collector.is_active:
             raise ConflictError("collector is inactive")
 
+        is_balance = body.collection_mode is CollectionMode.BALANCE
         try:
             terms = compute_terms(
                 principal=body.principal,
@@ -78,13 +81,19 @@ class LoanService:
                 interest_value=body.interest_value,
                 lending_model=LendingModel(body.lending_model),
             )
-            installment_base, _installment_max, schedule_rows = generate_schedule(
-                start_date=body.start_date,
-                frequency=RepaymentFrequency(body.repayment_frequency),
-                frequency_meta=body.frequency_meta,
-                total_installments=body.total_installments,
-                repayable=terms.repayable,
-            )
+            # A balance loan is only the money terms — principal, interest and
+            # the total to collect. No schedule is generated, so there are no
+            # installments to keep in step when collections come in.
+            schedule_rows = []
+            installment_base = None
+            if not is_balance:
+                installment_base, _installment_max, schedule_rows = generate_schedule(
+                    start_date=body.start_date,
+                    frequency=RepaymentFrequency(body.repayment_frequency),
+                    frequency_meta=body.frequency_meta,
+                    total_installments=body.total_installments,
+                    repayable=terms.repayable,
+                )
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
 
@@ -98,6 +107,7 @@ class LoanService:
             disbursed=terms.disbursed,
             repayable=terms.repayable,
             profit=terms.profit,
+            collection_mode=body.collection_mode.value,
             repayment_frequency=body.repayment_frequency,
             frequency_meta=body.frequency_meta,
             total_installments=body.total_installments,
@@ -334,6 +344,11 @@ class LoanService:
         loan = await self._fetch_loan(loan_id)
         if loan.status != LoanStatus.ACTIVE.value:
             raise ConflictError("only active loans can be rescheduled")
+        if loan.collection_mode == CollectionMode.BALANCE.value:
+            raise ConflictError(
+                "this loan has no schedule to reschedule; the customer pays any "
+                "amount against the remaining balance"
+            )
 
         # MISSED rows are excluded deliberately: marking a visit missed already
         # appended a replacement row carrying that money, so replacing the missed
@@ -416,16 +431,22 @@ class LoanService:
         raise ForbiddenError("loan not assigned to you")
 
     async def _to_summary(self, loan: Loan) -> LoanSummary:
-        outstanding, repaid, paid_count, overdue_count = await self._aggregates(loan.id)
+        if loan.collection_mode == CollectionMode.BALANCE.value:
+            outstanding, repaid, paid_count, overdue_count = await self._balance_aggregates(loan)
+        else:
+            outstanding, repaid, paid_count, overdue_count = await self._aggregates(loan.id)
         repaid_pct = round((repaid / loan.repayable) * 100, 1) if loan.repayable else 0
 
         # installment_amount is the BASE (floor) amount;
         # installment_amount_max is the largest single-installment value
         # (= base + 1 if `repayable % total_installments != 0`, else base).
-        remainder = loan.repayable - loan.installment_amount * loan.total_installments
-        installment_amount_max = (
-            loan.installment_amount + 1 if remainder > 0 else loan.installment_amount
-        )
+        if loan.installment_amount is None or loan.total_installments is None:
+            installment_amount_max = None  # balance loan — no per-visit amount
+        else:
+            remainder = loan.repayable - loan.installment_amount * loan.total_installments
+            installment_amount_max = (
+                loan.installment_amount + 1 if remainder > 0 else loan.installment_amount
+            )
 
         return LoanSummary(
             id=loan.id,
@@ -440,6 +461,7 @@ class LoanService:
             disbursed=loan.disbursed,
             repayable=loan.repayable,
             profit=loan.profit,
+            collection_mode=loan.collection_mode,
             repayment_frequency=loan.repayment_frequency,
             total_installments=loan.total_installments,
             installment_amount=loan.installment_amount,
@@ -464,6 +486,24 @@ class LoanService:
             **summary.model_dump(),
             installments=[InstallmentResponse.model_validate(i) for i in installments],
         )
+
+    async def _balance_aggregates(self, loan: Loan) -> tuple[int, int, int, int]:
+        """Figures for a BALANCE loan, taken straight from the payment ledger.
+
+        There is no schedule to consult: what was collected is the sum of the
+        receipts, and what is left is simply the rest of the repayable amount.
+        `paid_count` is the number of collections and `overdue_count` is always
+        zero, because a balance loan has no due dates to fall behind.
+        """
+        result = await self.session.execute(
+            select(
+                func.coalesce(func.sum(Payment.amount), 0),
+                func.count(Payment.id),
+            ).where(Payment.loan_id == loan.id, Payment.is_missed.is_(False))
+        )
+        collected, count = result.one()
+        repaid = int(collected or 0)
+        return max(0, loan.repayable - repaid), repaid, int(count or 0), 0
 
     async def _aggregates(self, loan_id: str) -> tuple[int, int, int, int]:
         """Return (outstanding, repaid, paid_count, overdue_count) for a loan."""

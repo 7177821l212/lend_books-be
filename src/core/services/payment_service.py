@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from src.constants.enums import (
     OPEN_INSTALLMENT_STATUSES,
+    CollectionMode,
     InstallmentStatus,
     LoanStatus,
     RepaymentFrequency,
@@ -35,7 +36,7 @@ from src.schemas.payment import (
     PaymentResponse,
     PickupItem,
 )
-from src.utils.time import business_today, utc_day_bounds
+from src.utils.time import business_noon_utc, business_today, utc_day_bounds
 
 
 class PaymentService:
@@ -61,6 +62,9 @@ class PaymentService:
         if loan.status != LoanStatus.ACTIVE.value:
             raise ConflictError(f"loan is {loan.status}; cannot collect")
 
+        if loan.collection_mode == CollectionMode.BALANCE.value:
+            return await self._collect_against_balance(current_user, loan, body)
+
         remaining_balance = await self._remaining_collectible_balance(loan.id)
         if body.amount > remaining_balance:
             raise ConflictError("payment exceeds the remaining loan balance")
@@ -83,6 +87,8 @@ class PaymentService:
             notes=body.notes,
             proof_photo_url=body.proof_photo_url,
         )
+        if body.collected_on is not None:
+            payment.collected_at = business_noon_utc(body.collected_on)
         self.session.add(payment)
         await self.session.flush()
 
@@ -96,6 +102,59 @@ class PaymentService:
         return self._payment_response(payment, allocations)
 
     # ------------------------------------------------------------------
+    # Collect — balance loans
+    # ------------------------------------------------------------------
+
+    async def _collect_against_balance(
+        self, current_user: dict, loan: Loan, body: CollectRequest
+    ) -> PaymentResponse:
+        """Record a receipt against a loan that keeps no schedule.
+
+        The notebook model: what is left is the repayable amount minus
+        everything collected so far, so a receipt needs no allocation and
+        touches no installment rows. The customer may pay any amount on any
+        day — ₹500 one day and ₹5,000 the next — and the loan closes the moment
+        the total collected reaches the total to collect.
+        """
+        collected = await self._total_collected(loan.id)
+        remaining = loan.repayable - collected
+        if body.amount > remaining:
+            raise ConflictError(
+                f"payment exceeds the remaining balance (₹{remaining:,} left)"
+            )
+
+        payment = Payment(
+            loan_id=loan.id,
+            schedule_id=None,
+            collector_id=current_user["sub"],
+            is_missed=False,
+            amount=body.amount,
+            mode=body.mode.value,
+            notes=body.notes,
+            proof_photo_url=body.proof_photo_url,
+        )
+        if body.collected_on is not None:
+            payment.collected_at = business_noon_utc(body.collected_on)
+        self.session.add(payment)
+        await self.session.flush()
+
+        if collected + body.amount >= loan.repayable:
+            loan.status = LoanStatus.CLOSED.value
+            loan.closed_at = datetime.now(UTC)
+            loan.close_reason = "Fully collected"
+        await self.session.flush()
+        return self._payment_response(payment, [])
+
+    async def _total_collected(self, loan_id: str) -> int:
+        """Every rupee received against this loan, regardless of when."""
+        result = await self.session.execute(
+            select(func.coalesce(func.sum(Payment.amount), 0)).where(
+                Payment.loan_id == loan_id, Payment.is_missed.is_(False)
+            )
+        )
+        return int(result.scalar_one() or 0)
+
+    # ------------------------------------------------------------------
     # Mark missed
     # ------------------------------------------------------------------
 
@@ -105,6 +164,11 @@ class PaymentService:
         loan = await self._get_loan_with_rbac(current_user, body.loan_id)
         if loan.status != LoanStatus.ACTIVE.value:
             raise ConflictError(f"loan is {loan.status}; cannot mark missed")
+
+        if loan.collection_mode == CollectionMode.BALANCE.value:
+            raise ConflictError(
+                "this loan has no schedule, so there is no visit to mark missed"
+            )
 
         installment = await self.session.get(Installment, body.schedule_id)
         # A replaced row keeps its old PENDING/PARTIAL status, so without the
@@ -225,6 +289,7 @@ class PaymentService:
             .where(
                 Loan.collector_id == current_user["sub"],
                 Loan.status == LoanStatus.ACTIVE.value,
+                Loan.collection_mode == CollectionMode.SCHEDULE.value,
                 Installment.is_active.is_(True),
                 Installment.due_date <= today,
                 Installment.status.in_(OPEN_INSTALLMENT_STATUSES),
@@ -250,8 +315,11 @@ class PaymentService:
                 )
             )
 
+        # Only scheduled dues count toward the day's target — see MyDayResponse.
         target_total = sum(p.due_amount for p in pickups)
         overdue_count = sum(1 for p in pickups if p.is_overdue)
+
+        pickups.extend(await self._balance_pickups(current_user["sub"]))
 
         day_start, day_end = utc_day_bounds(today)
         collected_today_row = await self.session.execute(
@@ -276,6 +344,47 @@ class PaymentService:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    async def _balance_pickups(self, collector_id: str) -> list[PickupItem]:
+        """Every active balance loan assigned to this collector.
+
+        These loans have no due dates, so there is nothing to be "due today" —
+        they simply stay on the round until the balance is cleared, and the
+        amount shown is what is left rather than an amount expected today.
+        """
+        result = await self.session.execute(
+            select(
+                Loan,
+                Customer,
+                func.coalesce(
+                    select(func.sum(Payment.amount))
+                    .where(Payment.loan_id == Loan.id, Payment.is_missed.is_(False))
+                    .correlate(Loan)
+                    .scalar_subquery(),
+                    0,
+                ).label("collected"),
+            )
+            .join(Customer, Customer.id == Loan.customer_id)
+            .where(
+                Loan.collector_id == collector_id,
+                Loan.status == LoanStatus.ACTIVE.value,
+                Loan.collection_mode == CollectionMode.BALANCE.value,
+            )
+            .order_by(Customer.name)
+        )
+        return [
+            PickupItem(
+                loan_id=loan.id,
+                customer_id=customer.id,
+                customer_name=customer.name,
+                customer_phone=customer.phone,
+                customer_location=customer.location,
+                collection_mode=CollectionMode.BALANCE,
+                due_amount=max(0, loan.repayable - int(collected or 0)),
+            )
+            for loan, customer, collected in result.all()
+        ]
+
 
     async def _get_loan_with_rbac(self, current_user: dict, loan_id: str) -> Loan:
         result = await self.session.execute(

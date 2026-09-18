@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
 from src.constants.enums import (
+    CollectionMode,
     InstallmentStatus,
     InterestType,
     LendingModel,
@@ -16,21 +17,44 @@ from src.constants.enums import (
 
 
 class LoanCreate(BaseModel):
+    """A new loan.
+
+    BALANCE loans need only the money terms: the
+    principal, the interest and the day it was given. They carry no installment
+    schedule, so `total_installments`, `repayment_frequency` and
+    `frequency_meta` do not apply and are rejected if sent.
+
+    SCHEDULE loans keep the original behaviour and still require
+    `total_installments`.
+    """
+
     customer_id: str
     collector_id: str
     principal: int = Field(gt=0, le=10_00_00_000)  # ≤ 10 Cr
     interest_type: InterestType = InterestType.PCT
     interest_value: float = Field(ge=0)
     lending_model: LendingModel = LendingModel.MODEL_A
-    repayment_frequency: RepaymentFrequency = RepaymentFrequency.DAILY
-    frequency_meta: dict[str, Any] | None = None
-    total_installments: int = Field(gt=0, le=10_000)
+    # Defaults to SCHEDULE so existing callers are unaffected; the app asks for
+    # BALANCE explicitly when registering new notebook-style lending.
+    collection_mode: CollectionMode = CollectionMode.SCHEDULE
     start_date: date
 
+    # SCHEDULE only
+    repayment_frequency: RepaymentFrequency = RepaymentFrequency.DAILY
+    frequency_meta: dict[str, Any] | None = None
+    total_installments: int | None = Field(default=None, gt=0, le=10_000)
+
     @model_validator(mode="after")
-    def validate_pct_range(self) -> "LoanCreate":
+    def validate_terms(self) -> "LoanCreate":
         if self.interest_type is InterestType.PCT and not 0 <= self.interest_value <= 100:
             raise ValueError("percentage interest must be between 0 and 100")
+        if self.collection_mode is CollectionMode.SCHEDULE:
+            if self.total_installments is None:
+                raise ValueError("schedule loans require 'total_installments'")
+        elif self.total_installments is not None:
+            raise ValueError(
+                "balance loans keep no schedule; omit 'total_installments'"
+            )
         return self
 
 
@@ -64,13 +88,17 @@ class LoanSummary(BaseModel):
     repayable: int
     profit: int
 
+    collection_mode: CollectionMode
     repayment_frequency: RepaymentFrequency
-    total_installments: int
-    installment_amount: int  # base (floor) per-installment amount
-    installment_amount_max: int = 0  # largest single installment when remainder distributes
+    total_installments: int | None = None
+    installment_amount: int | None = None  # base per-installment amount (schedule only)
+    installment_amount_max: int | None = None  # largest single installment (schedule only)
     start_date: date
 
     status: LoanStatus
+    # `outstanding` and `repaid` mean the same in both modes: what is still owed
+    # and what has been collected. A balance loan derives them straight from the
+    # payment ledger instead of from installment rows.
     outstanding: int
     repaid: int
     repaid_pct: float

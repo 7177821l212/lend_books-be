@@ -7,6 +7,7 @@ from sqlalchemy import JSON, Date, DateTime, ForeignKey, Integer, Numeric, Strin
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.constants.enums import (
+    CollectionMode,
     InterestType,
     LendingModel,
     LoanStatus,
@@ -39,13 +40,20 @@ class Loan(Base, TimestampMixin):
     repayable: Mapped[int] = mapped_column(Integer, nullable=False)
     profit: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    # Schedule
+    # How this loan tracks what is owed. Existing loans stay SCHEDULE; the
+    # schedule columns below are meaningless for BALANCE loans, which carry no
+    # installments at all.
+    collection_mode: Mapped[str] = mapped_column(
+        String(20), default=CollectionMode.SCHEDULE.value, nullable=False, index=True
+    )
+
+    # Schedule — unused by BALANCE loans, which is why they are nullable.
     repayment_frequency: Mapped[str] = mapped_column(
         String(20), default=RepaymentFrequency.DAILY.value, nullable=False
     )
     frequency_meta: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-    total_installments: Mapped[int] = mapped_column(Integer, nullable=False)
-    installment_amount: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_installments: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    installment_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
 
     # Lifecycle
