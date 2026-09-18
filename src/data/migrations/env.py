@@ -6,7 +6,7 @@ from logging.config import fileConfig
 from pathlib import Path
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import pool, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
@@ -41,7 +41,19 @@ def run_migrations_offline() -> None:
     )
 
     with context.begin_transaction():
+        # Cloud Run starts several instances of a new revision at once and the
+        # entrypoint migrates before serving, so without a lock they would race
+        # each other through the same DDL. A transaction-level advisory lock
+        # serialises them: the first instance migrates, the rest block here and
+        # then find there is nothing left to apply. The lock is released
+        # automatically when this transaction ends, including on failure.
+        connection.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _LOCK_KEY})
         context.run_migrations()
+
+
+# Arbitrary but STABLE 64-bit key — every deploy must pick the same number for
+# the lock to mean anything.
+_LOCK_KEY = 4_812_003_117_549_001
 
 
 def do_run_migrations(connection: Connection) -> None:
@@ -52,6 +64,13 @@ def do_run_migrations(connection: Connection) -> None:
         compare_server_default=True,
     )
     with context.begin_transaction():
+        # Cloud Run starts several instances of a new revision at once and the
+        # entrypoint migrates before serving, so without a lock they would race
+        # each other through the same DDL. A transaction-level advisory lock
+        # serialises them: the first instance migrates, the rest block here and
+        # then find there is nothing left to apply. The lock is released
+        # automatically when this transaction ends, including on failure.
+        connection.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _LOCK_KEY})
         context.run_migrations()
 
 
