@@ -47,6 +47,19 @@ class LendingModel(str, Enum):
     MODEL_B = "model_b"  # interest added on top: customer repays principal + interest
 
 
+class CollectionMode(str, Enum):
+    """How a loan tracks what is owed.
+
+    SCHEDULE loans are the original model: the repayable amount is split into
+    dated installments and collections are allocated against them. BALANCE loans
+    keep no schedule at all — a running total collected against the repayable
+    amount, the way a collector keeps a notebook.
+    """
+
+    SCHEDULE = "schedule"
+    BALANCE = "balance"
+
+
 class RescheduleMode(str, Enum):
     """How the investor wants a replacement plan derived."""
 

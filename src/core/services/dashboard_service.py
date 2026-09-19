@@ -79,11 +79,15 @@ class DashboardService:
         ).scalar_one()
         paid_active = (
             await self.session.execute(
-                select(func.coalesce(func.sum(Installment.paid_amount), 0))
-                .join(Loan, Loan.id == Installment.loan_id)
-                # No `is_active` filter — see note in customer_repository: this
-                # is collected cash, and replaced rows keep the money paid on them.
-                .where(Loan.status == LoanStatus.ACTIVE.value)
+                select(func.coalesce(func.sum(Payment.amount), 0))
+                .join(Loan, Loan.id == Payment.loan_id)
+                # Cash comes from the PAYMENTS ledger, not installment rows: a
+                # balance loan has no installments, so summing paid_amount made
+                # its collections invisible and overstated the balance.
+                .where(
+                    Loan.status == LoanStatus.ACTIVE.value,
+                    Payment.is_missed.is_(False),
+                )
             )
         ).scalar_one()
         outstanding = max(0, int(repayable_active) - int(paid_active))

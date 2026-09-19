@@ -102,7 +102,7 @@ class CustomerService:
         """Return (active_loan_count, total_outstanding) for one customer."""
         from sqlalchemy import func, select  # local — keep service imports tight
 
-        from src.data.models.postgres.installment import Installment
+        from src.data.models.postgres.payment import Payment
         from src.data.models.postgres.loan import Loan
 
         active = await self.session.execute(
@@ -116,14 +116,15 @@ class CustomerService:
             select(
                 func.coalesce(func.sum(Loan.repayable), 0).label("repayable_total"),
                 func.coalesce(
-                    select(func.sum(Installment.paid_amount))
-                    .select_from(Installment)
-                    .join(Loan, Loan.id == Installment.loan_id)
-                    # Collected cash: replaced rows keep their paid_amount, so
-                    # they must stay in this sum (see customer_repository).
+                    select(func.sum(Payment.amount))
+                    .select_from(Payment)
+                    .join(Loan, Loan.id == Payment.loan_id)
+                    # Collected cash comes from the ledger, which covers both
+                    # collection models (see customer_repository).
                     .where(
                         Loan.customer_id == customer_id,
                         Loan.status == LoanStatus.ACTIVE.value,
+                        Payment.is_missed.is_(False),
                     )
                     .scalar_subquery(),
                     0,
