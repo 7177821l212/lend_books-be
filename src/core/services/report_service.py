@@ -1,4 +1,4 @@
-"""Reports service — overdue list + blacklisted + analytics with filters."""
+"""Reports service — collections, blacklisted customers and analytics."""
 
 from __future__ import annotations
 
@@ -7,15 +7,13 @@ from datetime import date, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.constants.enums import InterestType, LoanStatus, UserRole
+from src.constants.enums import InterestType, UserRole
 from src.core.exceptions.base import ForbiddenError
+from src.core.services.dashboard_service import DashboardService
 from src.data.models.postgres.customer import Customer
-from src.data.models.postgres.installment import Installment
 from src.data.models.postgres.loan import Loan
-from src.data.models.postgres.user import User
 from src.schemas.dashboard import (
     BlacklistedCustomerRow,
-    OverdueLoanRow,
     ReportsResponse,
 )
 from src.utils.time import business_today
@@ -41,67 +39,44 @@ class ReportService:
         current_user: dict,
         collector_id: str | None = None,
         period: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> ReportsResponse:
         if current_user.get("role") != UserRole.INVESTOR.value:
             raise ForbiddenError("only investor can view reports")
 
-        since = _period_start(period)
-        overdue_rows = await self._overdue(collector_id=collector_id)
+        since = start_date or _period_start(period)
+        range_start, range_end = DashboardService.resolve_range(since, end_date)
         blacklisted = await self._blacklisted()
         interest_earned, avg_loan, avg_rate = await self._analytics(
-            collector_id=collector_id, since=since
+            collector_id=collector_id, since=range_start
         )
+        dashboard = DashboardService(self.session)
+        collection_summary = await dashboard.collection_summary(
+            range_start, range_end, collector_id=collector_id
+        )
+        collection_trend = await dashboard.collection_trend(
+            range_start, range_end, collector_id=collector_id
+        )
+        collector_performance = await dashboard.collector_performance(
+            range_start, range_end
+        )
+        if collector_id:
+            collector_performance = [
+                collector
+                for collector in collector_performance
+                if collector.id == collector_id
+            ]
 
         return ReportsResponse(
-            overdue=overdue_rows,
             blacklisted=blacklisted,
+            collection_summary=collection_summary,
+            collection_trend=collection_trend,
+            collector_performance=collector_performance,
             total_interest_earned=interest_earned,
             avg_loan_size=avg_loan,
             avg_interest_rate=avg_rate,
         )
-
-    async def _overdue(self, collector_id: str | None = None) -> list[OverdueLoanRow]:
-        q = (
-            select(
-                Loan.id.label("loan_id"),
-                Loan.customer_id,
-                Customer.name.label("customer_name"),
-                Loan.collector_id,
-                User.name.label("collector_name"),
-                func.count(Installment.id).label("count"),
-                func.coalesce(
-                    func.sum(Installment.due_amount - Installment.paid_amount), 0
-                ).label("amount"),
-            )
-            .join(Customer, Customer.id == Loan.customer_id)
-            .join(User, User.id == Loan.collector_id)
-            .join(Installment, Installment.loan_id == Loan.id)
-            .where(
-                Loan.status == LoanStatus.ACTIVE.value,
-                Installment.is_active.is_(True),
-                Installment.status.in_(["overdue", "missed"]),
-            )
-            .group_by(
-                Loan.id, Loan.customer_id, Customer.name, Loan.collector_id, User.name
-            )
-            .order_by(func.sum(Installment.due_amount - Installment.paid_amount).desc())
-        )
-        if collector_id:
-            q = q.where(Loan.collector_id == collector_id)
-
-        result = await self.session.execute(q)
-        return [
-            OverdueLoanRow(
-                loan_id=r.loan_id,
-                customer_id=r.customer_id,
-                customer_name=r.customer_name,
-                collector_id=r.collector_id,
-                collector_name=r.collector_name,
-                overdue_installments=int(r.count or 0),
-                overdue_amount=int(r.amount or 0),
-            )
-            for r in result.all()
-        ]
 
     async def _blacklisted(self) -> list[BlacklistedCustomerRow]:
         result = await self.session.execute(

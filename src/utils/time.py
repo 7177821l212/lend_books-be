@@ -3,6 +3,9 @@
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import func
+from sqlalchemy.sql.elements import ColumnElement
+
 from src.config.settings import settings
 
 
@@ -29,3 +32,15 @@ def business_noon_utc(day: date) -> datetime:
         day, time(hour=12), tzinfo=ZoneInfo(settings.BUSINESS_TIMEZONE)
     )
     return local_noon.astimezone(UTC)
+
+
+def business_day_expr(column: ColumnElement[datetime]) -> ColumnElement[date]:
+    """SQL expression for the business-calendar DAY a timestamp falls on.
+
+    Grouping collections by day has to use the same timezone the rest of the
+    app calls "today", or a trend chart drifts from the figures beside it. The
+    zone was written literally into each query while every Python helper read
+    it from settings, so changing the setting would have moved one and not the
+    other.
+    """
+    return func.date(func.timezone(settings.BUSINESS_TIMEZONE, column))
