@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 
 from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,30 +15,50 @@ from src.data.models.postgres.loan import Loan
 from src.data.models.postgres.payment import Payment
 from src.data.models.postgres.user import User
 from src.schemas.dashboard import (
+    CollectionSummary,
     CollectorPerformance,
     DashboardKPIs,
     DashboardResponse,
     TrendPoint,
 )
-from src.utils.time import business_today, utc_day_bounds
+from src.utils.time import business_day_expr, business_today, utc_day_bounds
 
 
 class DashboardService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def overview(self, current_user: dict) -> DashboardResponse:
+    async def overview(
+        self,
+        current_user: dict,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> DashboardResponse:
         if current_user.get("role") != UserRole.INVESTOR.value:
             raise ForbiddenError("only investor can view dashboard")
 
+        range_start, range_end = self.resolve_range(start_date, end_date)
         kpis = await self._kpis()
-        trend = await self._trend_last_30_days()
-        leaderboard = await self._collector_performance()
+        trend = await self.collection_trend(range_start, range_end)
+        collection_summary = await self.collection_summary(range_start, range_end)
+        leaderboard = await self.collector_performance(range_start, range_end)
         return DashboardResponse(
             kpis=kpis,
             trend_30d=trend,
+            collection_summary=collection_summary,
             collector_performance=leaderboard,
         )
+
+    @staticmethod
+    def resolve_range(
+        start_date: date | None, end_date: date | None
+    ) -> tuple[date, date]:
+        today = business_today()
+        end = end_date or today
+        start = start_date or (end - timedelta(days=29))
+        if start > end:
+            start, end = end, start
+        return start, end
 
     # ----- KPIs -----
 
@@ -178,14 +198,16 @@ class DashboardService:
 
     # ----- Trend -----
 
-    async def _trend_last_30_days(self) -> list[TrendPoint]:
-        today = business_today()
-        thirty_days_ago = today - timedelta(days=29)
-        period_start, period_end = utc_day_bounds(thirty_days_ago)
-        _, today_end = utc_day_bounds(today)
-        business_day = func.date(
-            func.timezone("Asia/Kolkata", Payment.collected_at)
-        )
+    async def collection_trend(
+        self,
+        start_date: date,
+        end_date: date,
+        collector_id: str | None = None,
+    ) -> list[TrendPoint]:
+        """Day-wise collections over the range, optionally for one collector."""
+        period_start, _ = utc_day_bounds(start_date)
+        _, period_end = utc_day_bounds(end_date)
+        business_day = business_day_expr(Payment.collected_at)
 
         result = await self.session.execute(
             select(
@@ -195,21 +217,69 @@ class DashboardService:
             .where(
                 Payment.is_missed.is_(False),
                 Payment.collected_at >= period_start,
-                Payment.collected_at < today_end,
+                Payment.collected_at < period_end,
+                *([Payment.collector_id == collector_id] if collector_id else []),
             )
             .group_by(business_day)
         )
         by_day = {row.day: int(row.amount or 0) for row in result.all()}
 
         points: list[TrendPoint] = []
-        for i in range(30):
-            d = thirty_days_ago + timedelta(days=i)
+        days = (end_date - start_date).days + 1
+        for i in range(days):
+            d = start_date + timedelta(days=i)
             points.append(TrendPoint(day=d, amount=by_day.get(d, 0)))
         return points
 
+    async def collection_summary(
+        self, start_date: date, end_date: date, collector_id: str | None = None
+    ) -> CollectionSummary:
+        period_start, _ = utc_day_bounds(start_date)
+        _, period_end = utc_day_bounds(end_date)
+        filters = [
+            Payment.is_missed.is_(False),
+            Payment.collected_at >= period_start,
+            Payment.collected_at < period_end,
+        ]
+        if collector_id:
+            filters.append(Payment.collector_id == collector_id)
+
+        result = await self.session.execute(
+            select(
+                func.coalesce(func.sum(Payment.amount), 0).label("total_collected"),
+                func.count(Payment.id).label("total_payments"),
+                func.coalesce(
+                    func.sum(Payment.amount).filter(Payment.mode == "CASH"), 0
+                ).label("cash_collected"),
+                func.coalesce(
+                    func.sum(Payment.amount).filter(Payment.mode == "UPI"), 0
+                ).label("upi_collected"),
+                func.coalesce(
+                    func.sum(Payment.amount).filter(Payment.mode == "BANK"), 0
+                ).label("bank_collected"),
+                func.count(distinct(Payment.collector_id)).label("active_collectors"),
+            ).where(*filters)
+        )
+        row = result.one()
+        return CollectionSummary(
+            start_date=start_date,
+            end_date=end_date,
+            total_collected=int(row.total_collected or 0),
+            total_payments=int(row.total_payments or 0),
+            cash_collected=int(row.cash_collected or 0),
+            upi_collected=int(row.upi_collected or 0),
+            bank_collected=int(row.bank_collected or 0),
+            active_collectors=int(row.active_collectors or 0),
+        )
+
     # ----- Collector performance -----
 
-    async def _collector_performance(self) -> list[CollectorPerformance]:
+    async def collector_performance(
+        self, start_date: date, end_date: date
+    ) -> list[CollectorPerformance]:
+        period_start, _ = utc_day_bounds(start_date)
+        _, period_end = utc_day_bounds(end_date)
+        business_day = business_day_expr(Payment.collected_at)
         result = await self.session.execute(
             select(
                 User.id,
@@ -221,9 +291,23 @@ class DashboardService:
                     func.count(Payment.id).filter(Payment.is_missed.is_(True)), 0
                 ).label("missed"),
                 func.coalesce(func.count(Payment.id), 0).label("visits"),
+                func.coalesce(
+                    func.count(distinct(business_day)).filter(
+                        Payment.is_missed.is_(False)
+                    ),
+                    0,
+                ).label("collection_days"),
+                func.max(business_day).filter(Payment.is_missed.is_(False)).label(
+                    "last_collection_date"
+                ),
             )
             .select_from(User)
-            .outerjoin(Payment, Payment.collector_id == User.id)
+            .outerjoin(
+                Payment,
+                (Payment.collector_id == User.id)
+                & (Payment.collected_at >= period_start)
+                & (Payment.collected_at < period_end),
+            )
             .where(User.role == UserRole.COLLECTOR.value, User.is_active.is_(True))
             .group_by(User.id, User.name)
             .order_by(func.sum(Payment.amount).desc().nullslast())
@@ -235,6 +319,13 @@ class DashboardService:
                 collected=int(row.collected or 0),
                 missed=int(row.missed or 0),
                 visits=int(row.visits or 0),
+                collection_days=int(row.collection_days or 0),
+                average_per_day=(
+                    int((row.collected or 0) / int(row.collection_days))
+                    if int(row.collection_days or 0)
+                    else 0
+                ),
+                last_collection_date=row.last_collection_date,
             )
             for row in result.all()
         ]

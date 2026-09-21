@@ -26,28 +26,33 @@ class TrendPoint(BaseModel):
     amount: int
 
 
+class CollectionSummary(BaseModel):
+    start_date: date
+    end_date: date
+    total_collected: int
+    total_payments: int
+    cash_collected: int
+    upi_collected: int
+    bank_collected: int
+    active_collectors: int
+
+
 class CollectorPerformance(BaseModel):
     id: str
     name: str
     collected: int
     missed: int
     visits: int
+    collection_days: int = 0
+    average_per_day: int = 0
+    last_collection_date: date | None = None
 
 
 class DashboardResponse(BaseModel):
     kpis: DashboardKPIs
     trend_30d: list[TrendPoint]
+    collection_summary: CollectionSummary
     collector_performance: list[CollectorPerformance]
-
-
-class OverdueLoanRow(BaseModel):
-    loan_id: str
-    customer_id: str
-    customer_name: str
-    collector_id: str
-    collector_name: str
-    overdue_installments: int
-    overdue_amount: int
 
 
 class BlacklistedCustomerRow(BaseModel):
@@ -58,8 +63,17 @@ class BlacklistedCustomerRow(BaseModel):
 
 
 class ReportsResponse(BaseModel):
-    overdue: list[OverdueLoanRow]
+    """Reports no longer carry an overdue list.
+
+    Overdue is an installment concept, and new lending is balance-only — those
+    loans have no due dates, so the list could only ever shrink toward covering
+    nothing while appearing to report on everything.
+    """
+
     blacklisted: list[BlacklistedCustomerRow]
+    collection_summary: CollectionSummary
+    collection_trend: list[TrendPoint]
+    collector_performance: list[CollectorPerformance]
     total_interest_earned: int
     avg_loan_size: int
     avg_interest_rate: float
