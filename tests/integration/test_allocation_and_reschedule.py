@@ -513,10 +513,10 @@ class TestShortPaymentVsMissedVisit:
         assert rows[2]["due_amount"] == 2_200
         assert detail["total_installments"] == 10
 
-        # The collector's worklist asks for the ₹1,100 shortfall, not ₹2,200.
+        # The visit is done for today, so it is off the round — but the ₹1,100
+        # shortfall is still owed on that date and returns tomorrow.
         my_day = (await client.get("/api/v1/payments/my-day", headers=col_headers)).json()
-        first = next(p for p in my_day["pickups"] if p["sequence"] == 1)
-        assert first["due_amount"] == 1_100
+        assert all(p["loan_id"] != loan["id"] for p in my_day["pickups"])
 
     async def test_a_genuinely_missed_visit_carries_the_whole_amount_forward(
         self, client: AsyncClient, db_session: AsyncSession
@@ -684,3 +684,67 @@ class TestEarlyPaymentWhenNothingIsDue:
         assert detail["repaid"] == 4_400
         assert detail["outstanding"] == 17_600
         assert detail["repaid"] + detail["outstanding"] == 22_000
+
+
+class TestScheduleRoundClearsOnAnyCollection:
+    """A schedule loan that took money today also leaves the round.
+
+    A customer paying part of what is due is normal, and the collector is not
+    returning to the same shop for the rest of it today. Nothing is forgiven:
+    the part-paid installment stays open and comes back tomorrow as overdue.
+    """
+
+    async def test_a_part_paid_visit_leaves_todays_round(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        inv_headers, col_headers, loan = await _setup(
+            client, db_session, "70", principal=20_000, interest_value=10,
+            total_installments=10,
+        )
+        my_day = (await client.get("/api/v1/payments/my-day", headers=col_headers)).json()
+        assert any(p["loan_id"] == loan["id"] for p in my_day["pickups"])
+        target_before = my_day["target_total"]
+
+        # ₹1,000 against a ₹2,200 visit — a short payment.
+        await _collect(client, col_headers, loan["id"], 1_000)
+
+        my_day = (await client.get("/api/v1/payments/my-day", headers=col_headers)).json()
+        assert all(p["loan_id"] != loan["id"] for p in my_day["pickups"]), (
+            "the visit happened, so it is off today's round"
+        )
+        assert my_day["collected_today"] == 1_000
+        # Pre-existing behaviour, recorded rather than asserted as desirable:
+        # `target_total` is the REMAINING due today, so it falls by whatever was
+        # collected. Hiding the row makes that more visible — see the note in
+        # MyDayResponse.
+        assert my_day["target_total"] == target_before - 1_000
+
+    async def test_the_shortfall_is_not_forgiven(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Hiding it from today's round must not write the money off."""
+        inv_headers, col_headers, loan = await _setup(
+            client, db_session, "71", principal=20_000, interest_value=10,
+            total_installments=10,
+        )
+        await _collect(client, col_headers, loan["id"], 1_000)
+
+        detail = (await client.get(f"/api/v1/loans/{loan['id']}", headers=inv_headers)).json()
+        rows = {i["sequence"]: i for i in detail["installments"]}
+        assert rows[1]["paid_amount"] == 1_000
+        assert rows[1]["status"] == "partial", "still open, so it returns tomorrow"
+        assert rows[1]["due_amount"] - rows[1]["paid_amount"] == 1_200
+        assert detail["repaid"] == 1_000
+        assert detail["outstanding"] == 21_000
+        assert detail["repaid"] + detail["outstanding"] == 22_000
+
+    async def test_an_untouched_loan_stays_on_the_round(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        _, col_headers, loan = await _setup(
+            client, db_session, "72", principal=20_000, interest_value=10,
+            total_installments=10,
+        )
+        my_day = (await client.get("/api/v1/payments/my-day", headers=col_headers)).json()
+        pickup = next(p for p in my_day["pickups"] if p["loan_id"] == loan["id"])
+        assert pickup["collected_today"] == 0
