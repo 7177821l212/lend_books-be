@@ -106,6 +106,11 @@ class PickupItem(BaseModel):
     loan_number: int = 1
     start_date: date | None = None
     missed_count: int = 0
+    # Collected against THIS loan today. A balance loan has no due date, so it
+    # stays on the round all day whether or not it has been collected — without
+    # this the list looks identical before and after a visit and the collector
+    # loses their place among a dozen customers.
+    collected_today: int = 0
     schedule_id: str | None = None
     sequence: int | None = None
     due_date: date | None = None
@@ -121,6 +126,12 @@ class MyDayResponse(BaseModel):
     # Only SCHEDULE loans contribute: a balance loan has no amount expected
     # today, so counting its whole remaining balance would make the day's
     # target meaningless.
+    #
+    # Note this is the REMAINING due today, so it falls as collections come in
+    # rather than standing still as a goal. A ₹1,000 payment against ₹2,200 due
+    # leaves target ₹1,200 beside collected ₹1,000, which reads as nearly done.
+    # Longstanding behaviour, but worth changing if the header is meant to show
+    # progress against the day's plan.
     target_total: int
     collected_today: int
     pickup_count: int

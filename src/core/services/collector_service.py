@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.constants.enums import UserRole
 from src.core.exceptions.base import ConflictError, ForbiddenError
+from src.core.services.dashboard_service import DashboardService
 from src.data.models.postgres.collector_location import CollectorLocation
 from src.data.models.postgres.loan import Loan
 from src.data.models.postgres.user import User
@@ -19,6 +20,7 @@ from src.schemas.collector import (
     CollectorUpdate,
     LocationReport,
 )
+from src.schemas.dashboard import TrendPoint
 from src.utils.security import hash_password
 
 
@@ -230,3 +232,23 @@ class CollectorService:
             )
             for loc, user in result.all()
         ]
+
+    async def collection_trend(
+        self,
+        current_user: dict,
+        collector_id: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[TrendPoint]:
+        """Day-wise collections for one collector over a date range.
+
+        Reuses the dashboard's trend query rather than repeating it — that one
+        already takes an optional `collector_id`, and two copies of the same
+        day-bucketing would drift apart.
+        """
+        collector = await self.get(current_user, collector_id)
+        dashboard = DashboardService(self.session)
+        range_start, range_end = DashboardService.resolve_range(start_date, end_date)
+        return await dashboard.collection_trend(
+            range_start, range_end, collector_id=collector.id
+        )
