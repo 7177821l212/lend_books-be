@@ -1,6 +1,8 @@
 """Collector API routes."""
 
-from fastapi import APIRouter, Depends, status
+from datetime import date
+
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.dependencies import get_current_user, get_db
@@ -12,6 +14,7 @@ from src.schemas.collector import (
     CollectorUpdate,
     LocationReport,
 )
+from src.schemas.dashboard import TrendPoint
 
 router = APIRouter(prefix="/collectors", tags=["collectors"])
 
@@ -96,3 +99,17 @@ async def delete_collector(
     db: AsyncSession = Depends(get_db),
 ) -> None:
     await CollectorService(db).delete(current_user, collector_id)
+
+
+@router.get("/{collector_id}/trend", response_model=list[TrendPoint])
+async def collector_collection_trend(
+    collector_id: str,
+    start_date: date | None = Query(None),
+    end_date: date | None = Query(None),
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[TrendPoint]:
+    """Day-wise collections for this collector. Defaults to the last 30 days."""
+    return await CollectorService(db).collection_trend(
+        current_user, collector_id, start_date=start_date, end_date=end_date
+    )

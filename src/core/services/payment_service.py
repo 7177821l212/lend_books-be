@@ -358,7 +358,9 @@ class PaymentService:
         )
         rows = result.all()
 
-        missed_counts = await self._missed_counts([loan.id for _, loan, _ in rows])
+        loan_ids = [loan.id for _, loan, _ in rows]
+        missed_counts = await self._missed_counts(loan_ids)
+        collected_today_by_loan = await self._collected_today_by_loan(loan_ids, today)
         pickups: list[PickupItem] = []
         for inst, loan, cust in rows:
             pickups.append(
@@ -379,11 +381,26 @@ class PaymentService:
                 )
             )
 
-        # Only scheduled dues count toward the day's target — see MyDayResponse.
+        # Computed over EVERY row due today, before anything is filtered out, so
+        # the day's target stays fixed as collections come in rather than
+        # shrinking underneath the collector.
+        # Only scheduled dues count toward the target — see MyDayResponse.
         target_total = sum(p.due_amount for p in pickups)
         overdue_count = sum(1 for p in pickups if p.is_overdue)
 
         pickups.extend(await self._balance_pickups(current_user["sub"]))
+
+        # A loan that took money today is a visit already made, so it drops off
+        # the round — including a short payment, because the collector is not
+        # going back to the same shop for the rest of it today. Nothing is
+        # forgiven: a part-paid installment stays open and returns tomorrow as
+        # overdue, and a balance loan simply reappears with a smaller balance.
+        collected_today_by_loan = await self._collected_today_by_loan(
+            [p.loan_id for p in pickups], today
+        )
+        for pickup in pickups:
+            pickup.collected_today = collected_today_by_loan.get(pickup.loan_id, 0)
+        pickups = [p for p in pickups if p.collected_today == 0]
 
         day_start, day_end = utc_day_bounds(today)
         collected_today_row = await self.session.execute(
@@ -408,6 +425,25 @@ class PaymentService:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    async def _collected_today_by_loan(
+        self, loan_ids: list[str], day: date
+    ) -> dict[str, int]:
+        """How much was collected against each loan today, in ONE query."""
+        if not loan_ids:
+            return {}
+        day_start, day_end = utc_day_bounds(day)
+        result = await self.session.execute(
+            select(Payment.loan_id, func.coalesce(func.sum(Payment.amount), 0))
+            .where(
+                Payment.loan_id.in_(loan_ids),
+                Payment.is_missed.is_(False),
+                Payment.collected_at >= day_start,
+                Payment.collected_at < day_end,
+            )
+            .group_by(Payment.loan_id)
+        )
+        return {loan_id: int(total) for loan_id, total in result.all()}
 
     async def _missed_counts(self, loan_ids: list[str]) -> dict[str, int]:
         """Missed-visit counts for many loans in ONE query.
@@ -454,7 +490,11 @@ class PaymentService:
             .order_by(Customer.name)
         )
         rows = result.all()
-        missed_counts = await self._missed_counts([loan.id for loan, _, _ in rows])
+        loan_ids = [loan.id for loan, _, _ in rows]
+        missed_counts = await self._missed_counts(loan_ids)
+        collected_today_by_loan = await self._collected_today_by_loan(
+            loan_ids, business_today()
+        )
         pickups: list[PickupItem] = []
         for loan, customer, collected in rows:
             pickups.append(
@@ -468,6 +508,7 @@ class PaymentService:
                     loan_number=loan.loan_number,
                     start_date=loan.start_date,
                     missed_count=missed_counts.get(loan.id, 0),
+                    collected_today=collected_today_by_loan.get(loan.id, 0),
                     due_amount=max(0, loan.repayable - int(collected or 0)),
                 )
             )

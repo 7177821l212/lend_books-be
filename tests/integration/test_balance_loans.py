@@ -223,7 +223,7 @@ class TestClosure:
 
 
 class TestWorklistAndScheduleOperations:
-    async def test_a_balance_loan_stays_on_the_round_until_it_is_cleared(
+    async def test_a_balance_loan_shows_what_is_left_until_it_is_collected(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
         """No due dates, so it simply appears every day while it is active."""
@@ -238,12 +238,12 @@ class TestWorklistAndScheduleOperations:
         assert pickup["is_overdue"] is False
         assert my_day["target_total"] == 0, "a balance loan owes nothing *today*"
 
+        # Once collected, the visit is done and the loan leaves today's round.
         await _collect(client, col_headers, loan["id"], 8_600)
         my_day = (
             await client.get("/api/v1/payments/my-day", headers=col_headers)
         ).json()
-        pickup = next(p for p in my_day["pickups"] if p["loan_id"] == loan["id"])
-        assert pickup["due_amount"] == 13_400
+        assert all(p["loan_id"] != loan["id"] for p in my_day["pickups"])
 
     async def test_a_cleared_balance_loan_leaves_the_round(
         self, client: AsyncClient, db_session: AsyncSession
@@ -564,3 +564,157 @@ class TestLoanNumberIsStable:
             await client.get(f"/api/v1/loans/{second['id']}", headers=inv)
         ).json()
         assert still_second["loan_number"] == 2, "numbers are assigned once, not ranked"
+
+
+class TestTheRoundClearsAsYouCollect:
+    """A collected customer leaves the round; an uncollected one stays.
+
+    A balance loan has no due date, so it would otherwise sit on the list all
+    day looking identical before and after a visit — a collector working a
+    dozen customers cannot tell who is left.
+    """
+
+    async def test_a_collected_loan_drops_off_the_round(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        _, col, loan = await _setup(client, db_session, "60")
+
+        my_day = (await client.get("/api/v1/payments/my-day", headers=col)).json()
+        assert any(p["loan_id"] == loan["id"] for p in my_day["pickups"])
+
+        await _collect(client, col, loan["id"], 500)
+
+        my_day = (await client.get("/api/v1/payments/my-day", headers=col)).json()
+        assert all(p["loan_id"] != loan["id"] for p in my_day["pickups"]), (
+            "the visit is done, so it should no longer be on the round"
+        )
+
+    async def test_only_the_collected_customer_leaves(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Collecting from one customer must not disturb the others."""
+        investor = await _make_user(db_session, "rinv@x.com")
+        collector = await _make_user(db_session, "rcol@x.com", UserRole.COLLECTOR)
+        inv = await _login(client, investor)
+        col = await _login(client, collector)
+
+        loans = []
+        for n in range(3):
+            customer = await _make_customer(db_session, f"6100000{n}0{n}")
+            res = await client.post(
+                "/api/v1/loans",
+                headers=inv,
+                json={
+                    "customer_id": customer.id,
+                    "collector_id": collector.id,
+                    "principal": 10_000,
+                    "interest_type": "pct",
+                    "interest_value": 10,
+                    "lending_model": "model_b",
+                    "collection_mode": "balance",
+                    "start_date": date.today().isoformat(),
+                },
+            )
+            assert res.status_code == 201, res.text
+            loans.append(res.json())
+
+        my_day = (await client.get("/api/v1/payments/my-day", headers=col)).json()
+        assert len(my_day["pickups"]) == 3
+
+        await _collect(client, col, loans[1]["id"], 800)
+
+        my_day = (await client.get("/api/v1/payments/my-day", headers=col)).json()
+        remaining = {p["loan_id"] for p in my_day["pickups"]}
+        assert remaining == {loans[0]["id"], loans[2]["id"]}, "only the visited one leaves"
+        assert my_day["collected_today"] == 800
+
+    async def test_a_missed_visit_stays_on_the_round(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Marking missed moves no money, so the customer is still owed a visit."""
+        _, col, loan = await _setup(client, db_session, "61")
+        res = await client.post(
+            "/api/v1/payments/missed",
+            headers=col,
+            json={"loan_id": loan["id"], "reason": "Shop closed"},
+        )
+        assert res.status_code in (200, 201), res.text
+
+        my_day = (await client.get("/api/v1/payments/my-day", headers=col)).json()
+        pickup = next((p for p in my_day["pickups"] if p["loan_id"] == loan["id"]), None)
+        assert pickup is not None, "a missed visit is not a collected visit"
+        assert pickup["collected_today"] == 0
+        assert pickup["missed_count"] == 1
+
+
+class TestCollectorTrendEndpoint:
+    """Per-collector collection trend, for the collector detail screen."""
+
+    async def test_trend_covers_only_that_collector(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        investor = await _make_user(db_session, "tinv@x.com")
+        one = await _make_user(db_session, "tcol1@x.com", UserRole.COLLECTOR)
+        two = await _make_user(db_session, "tcol2@x.com", UserRole.COLLECTOR)
+        inv = await _login(client, investor)
+        col_one = await _login(client, one)
+        col_two = await _login(client, two)
+        today = date.today()
+
+        async def loan_for(collector_id: str, phone: str) -> dict[str, Any]:
+            customer = await _make_customer(db_session, phone)
+            res = await client.post(
+                "/api/v1/loans",
+                headers=inv,
+                json={
+                    "customer_id": customer.id,
+                    "collector_id": collector_id,
+                    "principal": 20_000,
+                    "interest_type": "pct",
+                    "interest_value": 10,
+                    "lending_model": "model_b",
+                    "collection_mode": "balance",
+                    "start_date": today.isoformat(),
+                },
+            )
+            assert res.status_code == 201, res.text
+            return res.json()
+
+        loan_one = await loan_for(one.id, "5900000001")
+        loan_two = await loan_for(two.id, "5900000002")
+        await _collect(client, col_one, loan_one["id"], 1_500)
+        await _collect(client, col_two, loan_two["id"], 9_000)
+
+        trend = (
+            await client.get(f"/api/v1/collectors/{one.id}/trend", headers=inv)
+        ).json()
+        total = sum(point["amount"] for point in trend)
+        assert total == 1_500, "the other collector's ₹9,000 must not appear"
+        assert len(trend) == 30, "defaults to the last 30 days"
+
+    async def test_an_explicit_range_is_honoured(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        investor = await _make_user(db_session, "tinv2@x.com")
+        collector = await _make_user(db_session, "tcol3@x.com", UserRole.COLLECTOR)
+        inv = await _login(client, investor)
+        today = date.today()
+        res = await client.get(
+            f"/api/v1/collectors/{collector.id}/trend"
+            f"?start_date={(today - timedelta(days=6)).isoformat()}"
+            f"&end_date={today.isoformat()}",
+            headers=inv,
+        )
+        assert res.status_code == 200, res.text
+        assert len(res.json()) == 7
+
+    async def test_a_collector_cannot_read_another_collectors_trend(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        investor = await _make_user(db_session, "tinv3@x.com")
+        one = await _make_user(db_session, "tcol4@x.com", UserRole.COLLECTOR)
+        two = await _make_user(db_session, "tcol5@x.com", UserRole.COLLECTOR)
+        await _login(client, investor)
+        col_two = await _login(client, two)
+        res = await client.get(f"/api/v1/collectors/{one.id}/trend", headers=col_two)
+        assert res.status_code in (403, 404), res.text
